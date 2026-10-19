@@ -1,15 +1,10 @@
----
-type: overview
-updated: YYYY-MM-DD
----
+# egui-aros documentation
 
-# Documentation
+- [Development](development.md): toolchain, SDK, building the library and the
+  examples, host tests, running on AROS.
+- [Patching](patching.md): the pinned sources and how changes to them are kept.
+- [Using egui-aros in a program](using.md): the `run` loop, the `App` trait,
+  services, and what the library does and does not do.
 
-{{Describe the product for its users. Add installation, usage, API/architecture,
-and troubleshooting guides when available; keep links within published material.}}
-
-- [Development](development.md): contributor setup, build, and verification.
-
-This tree is versioned and intended for publication. Internal work records, status,
-backlog, screenshots, and raw reports stay in private `<workspace>/docs/` outside repository Git. Include images or test
-summaries here only after deliberately reviewing them for publication.
+Scope: x86_64 AROS ABIv11 (built and run on AROS One 1.3 under QEMU). Other
+ABIs, CPUs and real hardware have not been tried.

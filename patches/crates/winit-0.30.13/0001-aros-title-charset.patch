@@ -1,0 +1,69 @@
+From: egui-aros
+Subject: [PATCH] winit (AROS): window titles in the system charset
+
+Crate: winit 0.30.13 with contrib winit-0.30.13-aros.diff
+  (aros-development-team/contrib 6bbefa406c281909294c4c4e8743f7f892caa1cf).
+Date: 2026-10-19
+Problem: the AROS backend passes the title's UTF-8 bytes to Intuition, which
+  draws them in the system charset: "hello • — WordCraft" showed as
+  "hello â□¢ â□□ WordCraft" (pool v11-2, AROS One 1.3, 2026-10-19).
+Rationale: convert to ISO 8859-1, the charset the backend already assumes
+  for keymap text, with plain equivalents for common punctuation, as the
+  PhotoCraft, WordCraft and PdfCraft AROS shells did.
+Scope: one helper, used by Window::new and set_title. title() still
+  returns the title as given.
+Upstream-status: candidate for the AROS contrib crate store (not submitted).
+Limitations: ISO 8859-1 only, like the keymap text (see the keymap finding);
+  a system using another charset needs both changed together.
+Verification: see the egui-aros build records.
+Removal: when the backend converts titles itself.
+---
+diff --color -ruN -x .cargo-ok winit-0.30.13.orig/src/platform_impl/aros/window.rs winit-0.30.13/src/platform_impl/aros/window.rs
+--- winit-0.30.13.orig/src/platform_impl/aros/window.rs	2026-10-19 12:24:38
++++ winit-0.30.13/src/platform_impl/aros/window.rs	2026-10-19 12:24:38
+@@ -13,6 +13,27 @@
+ use crate::window::ImePurpose;
+ use crate::{error, window};
+ 
++/// A title for Intuition, which draws it in the system charset (ISO 8859-1 here, as the keymap
++/// text in `keyboard.rs`). Common punctuation outside it gets its plain equivalent (a title such
++/// as "file — App" or a "•" modified mark would otherwise show as UTF-8 bytes); anything else
++/// becomes `?`.
++fn title_cstring(title: &str) -> CString {
++    let mut out = Vec::with_capacity(title.len());
++    for c in title.chars() {
++        match c as u32 {
++            0 => {},
++            n if n < 256 => out.push(n as u8),
++            0x2010..=0x2015 | 0x2212 => out.push(b'-'),
++            0x2018 | 0x2019 | 0x201a => out.push(b'\''),
++            0x201c | 0x201d | 0x201e => out.push(b'"'),
++            0x2022 | 0x25cf => out.push(b'*'),
++            0x2026 => out.extend_from_slice(b"..."),
++            _ => out.push(b'?'),
++        }
++    }
++    CString::new(out).unwrap_or_default()
++}
++
+ /// Default interior when the application asks for none.
+ const DEFAULT_SIZE: (u32, u32) = (800, 600);
+ 
+@@ -48,7 +69,7 @@
+             flags |= sys::AROS_GUI_WINDOW_BORDERLESS;
+         }
+ 
+-        let title = CString::new(attrs.title.replace('\0', "")).unwrap_or_default();
++        let title = title_cstring(&attrs.title);
+         let raw_attrs = sys::aros_gui_window_attrs {
+             left,
+             top,
+@@ -187,7 +208,7 @@
+ 
+     #[inline]
+     pub fn set_title(&self, title: &str) {
+-        let Ok(text) = CString::new(title.replace('\0', "")) else { return };
++        let text = title_cstring(title);
+         if unsafe { sys::aros_gui_window_set_title(self.handle, text.as_ptr()) } == 0 {
+             *self.title.lock().unwrap() = title.to_owned();
+         }

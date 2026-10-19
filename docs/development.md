@@ -1,22 +1,70 @@
----
-type: guide
-updated: YYYY-MM-DD
----
-
 # Development
 
-## Supported scope
+## What you need
 
-{{Describe intended and verified targets separately, including architecture/ABI and
-priority where relevant. Do not claim support merely because a target is planned.}}
+- An x86_64 AROS **ABIv11** cross toolchain (GCC 10.5 `x86_64-aros-gcc`, `-ar`)
+  and the matching ABIv11 SDK. The library's C code and the final link must use
+  the same SDK; it is passed to the compiler as `--sysroot`.
+- A Rust toolchain that can build `std` for AROS, with
+  [rust-aros](https://github.com/tomaszstaniak/rust-aros)'s target template and
+  `libc-aros` (the build uses the commit named in `scripts/eaconfig.py`).
+  `rustc --version` must match `rustc_version` there.
 
-## Setup and commands
+  **Current limitation:** that rust-aros commit and the matching std toolchain
+  are not published yet, so this repository cannot yet be built from public
+  sources alone.
+- A deadwood2/AROS checkout at the commit in `scripts/eaconfig.py`: its
+  `compiler/pthread` is rebuilt with the fix in `patches/aros-pthread`.
+- Python 3.11+, Git, `patch`.
 
-{{Document prerequisites, versions, installation, build, run, and test commands that
-another contributor can use from a clean clone. State unimplemented steps honestly.}}
+Copy `local.example.json` to `local.json` and fill in the paths (or set the
+`EGUI_AROS_*` variables listed by `scripts/ea.py config`).
 
-Machine values belong in ignored local configuration. The versioned
-[configuration example](../local.env.example) documents the selected interface;
-[workflow scripts](../scripts/README.md) describe the loader contract. Do not publish
-actual workstation paths or credentials. Public instructions must not depend on
-private reports or guides in `<workspace>/docs/`.
+## Build
+
+```sh
+scripts/ea.py fetch                  # sparse clones of the pinned upstreams
+scripts/ea.py build --online         # first build: downloads crates
+scripts/ea.py build                  # later builds, offline
+scripts/ea.py build -p egui-aros-cpu-probe
+```
+
+Each build writes `build/v11/out/<date>-<id>/` with the binaries and
+`manifest.json` (sources, patches, toolchain, the exact cargo command and the
+packages linked). A build is not a test: run the result on AROS.
+
+`cargo` prints "patch ... was not used in the crate graph" for every patched
+crate: that comes from building the standard library, which sees the same
+`[patch]` table. The manifest's `linked_packages` shows which copies were used.
+
+## Host tests
+
+```sh
+scripts/ea.py test
+```
+
+Runs the library's tests on the build machine (the renderer's coverage tests,
+text conversions), with the patched crates in place.
+
+## Examples
+
+| Package | What it is |
+|---|---|
+| `egui-aros-cpu-probe` | a small scene (text, edit fields, scrolling, a translucent texture) on egui-aros |
+| `egui-aros-glow-probe` | the same scene on eframe's glow renderer through glutin's GLA backend |
+| `egui-aros-lifecycle-probe` | logs the task's signals around each winit/glutin step |
+
+Both probes take `EGUI_PROBE_SIZE=<w>x<h>`, `EGUI_PROBE_FRAMES=<n>` (repaint
+continuously and close after n frames) and `EGUI_PROBE_REPORT=<file>` (frame
+times and the task's signals at start and end); the CPU probe also takes
+`EGUI_PROBE_WAKER=1` (another thread requests repaints every millisecond, also
+after the window has closed). Give them `Stack 4000000` in the Shell.
+`tests/guest/` has AmigaDOS scripts that run them.
+
+## Using egui-aros from another repository
+
+`scripts/ea.py vendor --dest DIR --cargo-home HOME --lock Cargo.lock` prepares
+this tree's crate and the patched crates it needs under `DIR` and writes
+`DIR/patches.json`; a program's build adds each path as a `[patch.crates-io]`
+entry. Pin the egui-aros commit in the program's own records and run `vendor`
+from that commit.

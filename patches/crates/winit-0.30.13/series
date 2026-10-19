@@ -1,1 +1,2 @@
 contrib:development/rust/crates/winit-0.30.13-aros.diff
+0001-aros-title-charset.patch
