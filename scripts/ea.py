@@ -7,6 +7,7 @@ Commands (run `ea.py COMMAND --help`):
   fetch    clone/verify the pinned upstream checkouts (upstream/<id>, sparse)
   crates   prepare the patched crates (crates.io archives or upstream paths)
   build    build AROS binaries from this repository into a fresh output
+  test     run the host tests (the patched crates in place, as on AROS)
   vendor   for a program that uses egui-aros: this tree's crate and its patched
            crates in one directory, with patches.json naming each path
 
@@ -441,6 +442,20 @@ def cmd_build(args):
     print(json.dumps({"output": str(out), "binaries": binaries, "repository_dirty": dirty}, indent=2))
 
 
+def cmd_test(args):
+    """Host `cargo test` of the egui-aros crate with the same [patch] entries as the AROS build
+    (aros-gui-sys is not on crates.io; the patched crates are what AROS builds use)."""
+    cfg = eaconfig.load(["cargo_home", "build_root"])
+    crates = cmd_crates(args, quiet=True)
+    command = ["cargo", "test", "-p", "egui-aros", "--all-features", "--lib"]
+    for name, info in crates.items():
+        command += ["--config", f"patch.crates-io.{name}.path=" + json.dumps(info["path"])]
+    env = dict(os.environ, CARGO_HOME=cfg["cargo_home"], CARGO_TARGET_DIR=str(Path(cfg["build_root"]) / "host-target"))
+    result = subprocess.run([str(c) for c in command], cwd=REPO, env=env)
+    if result.returncode:
+        raise Failure(f"host tests failed ({result.returncode})")
+
+
 def cmd_vendor(args):
     """The egui-aros crate of this tree and the patched crates it needs, prepared under --dest.
     Registry archives come from --cargo-home (the consumer's), and only crates in the
@@ -473,6 +488,7 @@ def main():
     b.add_argument("--worktree", action="store_true", help="build uncommitted files too (recorded as such)")
     b.add_argument("--online", action="store_true", help="allow cargo to download missing crates")
     b.set_defaults(func=cmd_build)
+    sub.add_parser("test", help="run the host tests").set_defaults(func=cmd_test)
     v = sub.add_parser("vendor", help="prepare egui-aros and its patched crates for a program that uses it")
     v.add_argument("--dest", required=True, help="output directory")
     v.add_argument("--cargo-home", required=True, help="CARGO_HOME holding the registry archives")
