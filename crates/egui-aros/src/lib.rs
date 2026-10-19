@@ -123,6 +123,8 @@ pub struct Options {
     /// Longest sleep when nothing asks for a repaint, so that [`App::logic`] still gets a turn
     /// for background work. `None`: sleep until an event or a repaint request.
     pub idle_poll: Option<Duration>,
+    /// Collect the renderer's per-kind statistics ([`raster::Renderer::stats`]); costs a little.
+    pub measure_paint: bool,
 }
 
 impl Default for Options {
@@ -133,6 +135,7 @@ impl Default for Options {
             min_inner_size: None,
             clear_color: [0, 0, 0],
             idle_poll: None,
+            measure_paint: false,
         }
     }
 }
@@ -144,13 +147,23 @@ pub struct FrameReport {
     pub frame: u64,
     pub width: u32,
     pub height: u32,
-    /// Input events delivered since the previous frame.
+    /// Input events delivered since the previous frame, and of which kind.
     pub events: u32,
+    pub moves: u32,
+    pub keys: u32,
+    pub wheels: u32,
+    pub buttons: u32,
     /// From the oldest and the newest of those events' arrival to the frame being shown.
     pub latency_oldest: Option<Duration>,
     pub latency_newest: Option<Duration>,
-    /// The loop slept this long before the frame.
+    /// The loop slept this long before the frame, with this timeout (`None`: until an event),
+    /// and the timeout ended the sleep rather than an event or a wake-up.
     pub waited: Duration,
+    pub wait_timeout: Option<Duration>,
+    pub woke_by_timeout: bool,
+    /// How far past its due time the repaint that started this frame was (`None`: no repaint
+    /// was due; the frame is for input).
+    pub repaint_late: Option<Duration>,
     pub logic: Duration,
     pub ui: Duration,
     pub tessellate: Duration,
@@ -289,14 +302,15 @@ impl Repaint {
         }
     }
 
-    fn take_due(&self, now: Instant) -> bool {
+    /// The due time, if a repaint is due by `now` (and then no longer pending).
+    fn take_due(&self, now: Instant) -> Option<Instant> {
         let mut due = self.due.lock().unwrap_or_else(PoisonError::into_inner);
         match *due {
             Some(t) if t <= now => {
                 *due = None;
-                true
+                Some(t)
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -315,6 +329,8 @@ struct Running {
     /// Times ([`clock_us`]) of the oldest and newest input event since the last frame, and
     /// their number.
     events: Option<(i64, i64, u32)>,
+    /// Moves, keys, wheels, buttons since the last frame.
+    kinds: [u32; 4],
 }
 
 struct Runner<'a> {
@@ -329,6 +345,11 @@ struct Runner<'a> {
     slept_since: Instant,
     /// A redraw is pending in winit's queue.
     redraw_queued: bool,
+    /// The last sleep's timeout and what ended it.
+    wait_timeout: Option<Duration>,
+    woke_by_timeout: bool,
+    /// The due time of the repaint that queued the pending redraw.
+    due_taken: Option<Instant>,
 }
 
 impl Runner<'_> {
@@ -348,11 +369,16 @@ impl Runner<'_> {
         self.running = Some(Running {
             window,
             state,
-            renderer: raster::Renderer::new(size.width as usize, size.height as usize),
+            renderer: {
+                let mut renderer = raster::Renderer::new(size.width as usize, size.height as usize);
+                renderer.measure = self.options.measure_paint;
+                renderer
+            },
             info,
             close_requested: false,
             busy: false,
             events: None,
+            kinds: [0; 4],
         });
         self.queue_redraw();
         Ok(())
@@ -384,6 +410,8 @@ impl Runner<'_> {
         raw.viewports.insert(ViewportId::ROOT, info);
         self.app.raw_input_hook(&mut raw);
         let events = r.events.take();
+        let kinds = std::mem::take(&mut r.kinds);
+        let repaint_late = self.due_taken.take().map(|due| began.saturating_duration_since(due));
 
         let input_done = Instant::now();
         let mut logic_done = input_done;
@@ -457,9 +485,16 @@ impl Runner<'_> {
             width: w as u32,
             height: h as u32,
             events: events.map_or(0, |e| e.2),
+            moves: kinds[0],
+            keys: kinds[1],
+            wheels: kinds[2],
+            buttons: kinds[3],
             latency_oldest: events.map(|e| Duration::from_micros((shown_us - e.0.min(e.1)).max(0) as u64)),
             latency_newest: events.map(|e| Duration::from_micros((shown_us - e.0.max(e.1)).max(0) as u64)),
             waited,
+            wait_timeout: self.wait_timeout,
+            woke_by_timeout: self.woke_by_timeout,
+            repaint_late,
             logic: logic_done - input_done,
             ui: ui_done - logic_done,
             tessellate: tessellated - paint_start,
@@ -516,8 +551,12 @@ fn present(window: &Window, renderer: &raster::Renderer) {
 
 impl ApplicationHandler<()> for Runner<'_> {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        if !matches!(cause, StartCause::Poll) {
+            self.woke_by_timeout = matches!(cause, StartCause::ResumeTimeReached { .. });
+        }
         if let StartCause::WaitCancelled { .. } | StartCause::ResumeTimeReached { .. } | StartCause::Poll = cause {
-            if self.repaint.take_due(Instant::now()) {
+            if let Some(due) = self.repaint.take_due(Instant::now()) {
+                self.due_taken.get_or_insert(due);
                 self.queue_redraw();
             }
         }
@@ -533,7 +572,8 @@ impl ApplicationHandler<()> for Runner<'_> {
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
-        if self.repaint.take_due(Instant::now()) {
+        if let Some(due) = self.repaint.take_due(Instant::now()) {
+            self.due_taken.get_or_insert(due);
             self.queue_redraw();
         }
     }
@@ -558,16 +598,17 @@ impl ApplicationHandler<()> for Runner<'_> {
             WindowEvent::Destroyed => {}
             event => {
                 let now = event_time_us();
-                let is_input = matches!(
-                    event,
-                    WindowEvent::KeyboardInput { .. }
-                        | WindowEvent::CursorMoved { .. }
-                        | WindowEvent::MouseInput { .. }
-                        | WindowEvent::MouseWheel { .. }
-                );
+                let kind = match event {
+                    WindowEvent::CursorMoved { .. } => Some(0),
+                    WindowEvent::KeyboardInput { .. } => Some(1),
+                    WindowEvent::MouseWheel { .. } => Some(2),
+                    WindowEvent::MouseInput { .. } => Some(3),
+                    _ => None,
+                };
                 let Some(r) = self.running.as_mut() else { return };
                 let response = r.state.on_window_event(&r.window, &event);
-                if is_input {
+                if let Some(kind) = kind {
+                    r.kinds[kind] += 1;
                     r.events = Some(r.events.map_or((now, now, 1), |(old, new, n)| (old.min(now), new.max(now), n + 1)));
                 }
                 if response.repaint {
@@ -579,11 +620,15 @@ impl ApplicationHandler<()> for Runner<'_> {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
-        if self.repaint.take_due(now) {
+        if let Some(due) = self.repaint.take_due(now) {
+            self.due_taken.get_or_insert(due);
             self.queue_redraw();
         }
         if self.redraw_queued {
             // winit delivers the redraw before it sleeps.
+            self.wait_timeout = Some(Duration::ZERO);
+            self.woke_by_timeout = false;
+            self.slept_since = now;
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         }
@@ -593,6 +638,7 @@ impl ApplicationHandler<()> for Runner<'_> {
             (a, b) => a.or(b),
         };
         self.slept_since = now;
+        self.wait_timeout = wake.map(|w| w.saturating_duration_since(now));
         event_loop.set_control_flow(wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
         if poll.is_some_and(|p| wake == Some(p)) {
             // The idle poll is a repaint too: it is what gives `logic` its turn.
@@ -634,6 +680,9 @@ pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<()
         frames: 0,
         slept_since: now,
         redraw_queued: false,
+        wait_timeout: None,
+        woke_by_timeout: false,
+        due_taken: None,
     };
     let result = event_loop.run_app(&mut runner).map_err(Error::EventLoop);
     // Also covers a loop that ended without `exiting` (an error before the window opened).

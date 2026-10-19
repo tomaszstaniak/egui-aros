@@ -43,6 +43,7 @@ fn main() {
         min_inner_size: Some((320, 240)),
         clear_color: [0x1b, 0x1b, 0x1b],
         idle_poll: None,
+        measure_paint: false,
     };
     let ctx = egui::Context::default();
     let stop = Arc::new(AtomicBool::new(false));
