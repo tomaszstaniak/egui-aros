@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["examples/glow-probe"]
+
+[profile.release]
+opt-level = 3
+debug = false

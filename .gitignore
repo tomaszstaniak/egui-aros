@@ -1,0 +1,31 @@
+# Generated dependencies and build outputs. Adapt to the selected stack.
+/build/
+/dist/
+/target/
+/node_modules/
+/deps/
+
+# Local copies in the optional upstream-patches workflow.
+/upstream/
+/work/
+
+# Private work belongs in the containing workspace. Guard accidental local copies.
+/internal/
+
+# Mutable local state; ignored does not mean disposable.
+/var/
+/local.json
+/local.env
+/.env
+/.env.local
+
+# Study checkouts belong in the containing workspace, never in this repository.
+/references/
+
+# Host metadata.
+.DS_Store
+Thumbs.db
+__pycache__/
+
+# Assets, content, source datasets, fixtures and packaging sources are NOT
+# blanket-ignored. Record any collection-specific policy in the directory map.
