@@ -18,6 +18,10 @@ struct App {
 }
 
 impl egui_aros::App for App {
+    fn started(&mut self, _window: egui_aros::WindowHandle) {
+        self.probe.header = vec![("renderer".to_owned(), format!("egui-aros {}", egui_aros::renderer_name()))];
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui) {
         self.close |= self.probe.ui(ui);
     }

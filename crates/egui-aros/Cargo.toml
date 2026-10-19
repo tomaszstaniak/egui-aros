@@ -10,6 +10,10 @@ description = "Runs egui programs in an Intuition window on AROS: winit and egui
 default = []
 # ASL file and drawer requesters that return absolute paths.
 asl = []
+# Draw with OpenGL through gl.library (glutin's GLA backend and egui_glow) instead of the CPU
+# renderer. A program built with it needs gl.library to start; without a usable context it
+# falls back to the CPU renderer.
+glow = ["dep:egui_glow", "dep:glow", "dep:glutin", "dep:glutin-winit"]
 
 [dependencies]
 egui = { version = "=0.36.2", default-features = false }
@@ -17,6 +21,10 @@ egui-winit = { version = "=0.36.2", default-features = false, features = ["clipb
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 raw-window-handle = "0.6.2"
 log = "0.4"
+egui_glow = { version = "=0.36.2", default-features = false, optional = true }
+glow = { version = "0.17", optional = true }
+glutin = { version = "=0.32.3", default-features = false, optional = true }
+glutin-winit = { version = "=0.5.0", default-features = false, optional = true }
 
 [target.'cfg(target_os = "aros")'.dependencies]
 # The message time stamps for latency (with this repository's aros-gui-sys patch).

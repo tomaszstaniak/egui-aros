@@ -17,6 +17,9 @@
 
 pub mod raster;
 
+#[cfg(feature = "glow")]
+mod gl;
+
 #[cfg(feature = "asl")]
 pub mod asl;
 
@@ -219,6 +222,14 @@ mod tests {
     }
 }
 
+static RENDERER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Which renderer draws the window: "CPU", or "OpenGL: vendor / renderer / version". Known once
+/// the window is open (before that, "CPU").
+pub fn renderer_name() -> String {
+    RENDERER.get().cloned().unwrap_or_else(|| "CPU".to_owned())
+}
+
 /// The task's allocated signals (`tc_SigAlloc`), for leak checks; 0 on other systems.
 pub fn task_signals() -> u32 {
     #[cfg(target_os = "aros")]
@@ -320,8 +331,15 @@ pub trait App {
         false
     }
 
-    /// After a frame is shown.
+    /// After a frame is shown. With the CPU renderer `renderer.frame` holds the frame's pixels;
+    /// with OpenGL only when [`Self::wants_pixels`] said so before the frame.
     fn frame_done(&mut self, _report: &FrameReport, _renderer: &raster::Renderer) {}
+
+    /// Asked before each frame: read the frame's pixels back for [`Self::frame_done`] (OpenGL
+    /// only; a screenshot, for instance).
+    fn wants_pixels(&self) -> bool {
+        false
+    }
 }
 
 /// Why [`run`] could not run the program.
@@ -439,6 +457,9 @@ impl Repaint {
 }
 
 struct Running {
+    // Dropped before the window.
+    #[cfg(feature = "glow")]
+    gl: Option<gl::Gl>,
     window: Rc<Window>,
     state: egui_winit::State,
     renderer: raster::Renderer,
@@ -480,13 +501,34 @@ impl Runner<'_> {
         if let Some((w, h)) = self.options.min_inner_size {
             attributes = attributes.with_min_inner_size(winit::dpi::PhysicalSize::new(w, h));
         }
-        let window = Rc::new(event_loop.create_window(attributes).map_err(|e| Error::Window(e.to_string()))?);
+        #[cfg(feature = "glow")]
+        let (window, gl) = {
+            let (window, gl) = gl::open(event_loop, attributes);
+            let window = window.ok_or_else(|| Error::Window("Intuition could not open the window".into()))?;
+            match gl {
+                Ok(gl) => {
+                    log::info!("renderer: OpenGL {}", gl.info);
+                    let _ = RENDERER.set(format!("OpenGL: {}", gl.info));
+                    (window, Some(gl))
+                }
+                Err(e) => {
+                    log::warn!("OpenGL not available ({e}); drawing with the CPU");
+                    let _ = RENDERER.set(format!("CPU (OpenGL failed: {e})"));
+                    (window, None)
+                }
+            }
+        };
+        #[cfg(not(feature = "glow"))]
+        let window = event_loop.create_window(attributes).map_err(|e| Error::Window(e.to_string()))?;
+        let window = Rc::new(window);
         let size = window.inner_size();
         let state = egui_winit::State::new(self.ctx.clone(), ViewportId::ROOT, event_loop, Some(1.0), None, Some(16384));
         let mut info = ViewportInfo::default();
         egui_winit::update_viewport_info(&mut info, &self.ctx, &window, true);
         self.app.started(WindowHandle(Rc::downgrade(&window)));
         self.running = Some(Running {
+            #[cfg(feature = "glow")]
+            gl,
             window,
             state,
             renderer: {
@@ -586,19 +628,48 @@ impl Runner<'_> {
 
         let size = r.window.inner_size();
         let (w, h) = (size.width.max(1) as usize, size.height.max(1) as usize);
-        if (w, h) != (r.renderer.width, r.renderer.height) {
-            r.renderer.resize(w, h);
-        }
         let paint_start = Instant::now();
         let primitives = self.ctx.tessellate(out.shapes, out.pixels_per_point);
         let tessellated = Instant::now();
-        r.renderer.update_textures(&out.textures_delta);
-        let uploaded = Instant::now();
-        r.renderer.clear(self.options.clear_color);
-        r.renderer.paint(&primitives, out.pixels_per_point);
-        r.renderer.free_textures(&out.textures_delta);
-        let rasterized = Instant::now();
-        present(&r.window, &r.renderer);
+        let mut textures_delta = out.textures_delta;
+        let texture_pixels = textures_delta.set.iter().flat_map(|(_, ds)| ds.iter()).map(|d| (d.image.width() * d.image.height()) as u64).sum();
+        #[cfg(feature = "glow")]
+        let gl_frame = r.gl.is_some();
+        #[cfg(not(feature = "glow"))]
+        let gl_frame = false;
+        let (uploaded, rasterized);
+        if gl_frame {
+            #[cfg(feature = "glow")]
+            {
+                let wants_pixels = self.app.wants_pixels();
+                let gl = r.gl.as_mut().expect("checked");
+                if (w, h) != (r.renderer.width, r.renderer.height) {
+                    gl.resize([w as u32, h as u32]);
+                    r.renderer.width = w;
+                    r.renderer.height = h;
+                }
+                uploaded = Instant::now();
+                gl.paint([w as u32, h as u32], self.options.clear_color, out.pixels_per_point, &primitives, &mut textures_delta);
+                if wants_pixels {
+                    r.renderer.frame = gl.read_pixels([w as u32, h as u32]);
+                }
+                rasterized = Instant::now();
+                gl.present();
+            }
+            #[cfg(not(feature = "glow"))]
+            unreachable!();
+        } else {
+            if (w, h) != (r.renderer.width, r.renderer.height) {
+                r.renderer.resize(w, h);
+            }
+            r.renderer.update_textures(&textures_delta);
+            uploaded = Instant::now();
+            r.renderer.clear(self.options.clear_color);
+            r.renderer.paint(&primitives, out.pixels_per_point);
+            r.renderer.free_textures(&textures_delta);
+            rasterized = Instant::now();
+            present(&r.window, &r.renderer);
+        }
         let shown = Instant::now();
         let shown_us = clock_us();
         self.frames += 1;
@@ -631,7 +702,7 @@ impl Runner<'_> {
                     egui::epaint::Primitive::Callback(_) => 0,
                 })
                 .sum(),
-            texture_pixels: out.textures_delta.set.iter().flat_map(|(_, ds)| ds.iter()).map(|d| (d.image.width() * d.image.height()) as u64).sum(),
+            texture_pixels,
             next_repaint,
         };
         self.app.frame_done(&report, &r.renderer);
@@ -642,6 +713,8 @@ impl Runner<'_> {
         if let Some(mut r) = self.running.take() {
             // Textures belong to the renderer; nothing of the window outlives this.
             r.renderer.free_all();
+            #[cfg(feature = "glow")]
+            drop(r.gl.take());
             drop(r);
         }
         event_loop.exit();
@@ -774,6 +847,8 @@ impl ApplicationHandler<()> for Runner<'_> {
         self.repaint.waker.disable();
         if let Some(mut r) = self.running.take() {
             r.renderer.free_all();
+            #[cfg(feature = "glow")]
+            drop(r.gl.take());
         }
     }
 }
