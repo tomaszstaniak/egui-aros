@@ -7,6 +7,8 @@ Commands (run `ea.py COMMAND --help`):
   fetch    clone/verify the pinned upstream checkouts (upstream/<id>, sparse)
   crates   prepare the patched crates (crates.io archives or upstream paths)
   build    build AROS binaries from this repository into a fresh output
+  vendor   for a program that uses egui-aros: this tree's crate and its patched
+           crates in one directory, with patches.json naming each path
 
 Nothing here edits upstream/<id>, a shared toolchain, an SDK or the Cargo
 registry.
@@ -84,7 +86,9 @@ def upstreams():
 
 
 def upstream_dir(rid):
-    return REPO / "upstream" / rid
+    # A consumer runs this script from an extracted commit, which has no upstream/ checkouts.
+    root = os.environ.get("EGUI_AROS_UPSTREAM_ROOT")
+    return (Path(root) if root else REPO / "upstream") / rid
 
 
 def check_upstream(rid, spec):
@@ -149,11 +153,11 @@ def crate_source(spec, cfg):
     return archives[0].read_bytes(), name, {"registry_checksum": spec["checksum"]}
 
 
-def cmd_crates(args, quiet=False):
+def cmd_crates(args, quiet=False, lock=None, dest_root=None):
     cfg = eaconfig.load(["cargo_home", "build_root"])
     out = {}
     import tomllib
-    locked = {(p["name"], p["version"]) for p in tomllib.loads((REPO / "Cargo.lock").read_text())["package"]}
+    locked = {(p["name"], p["version"]) for p in tomllib.loads(Path(lock or REPO / "Cargo.lock").read_text())["package"]}
     for spec in crate_specs():
         name = f"{spec['name']}-{spec['version']}"
         # A registry crate the lock does not use needs no copy (cargo would only warn about it).
@@ -163,7 +167,7 @@ def cmd_crates(args, quiet=False):
             continue
         patches = series_patches(name)
         key = hashlib.sha256(b"".join(bytes.fromhex(sha256_file(p)) for p in patches)).hexdigest()[:8]
-        dest = Path(cfg["build_root"]) / "crates" / f"{name}-{key}"
+        dest = Path(dest_root or Path(cfg["build_root"]) / "crates") / f"{name}-{key}"
         data, inner, origin = crate_source(spec, cfg)
         if not dest.exists():
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -437,6 +441,25 @@ def cmd_build(args):
     print(json.dumps({"output": str(out), "binaries": binaries, "repository_dirty": dirty}, indent=2))
 
 
+def cmd_vendor(args):
+    """The egui-aros crate of this tree and the patched crates it needs, prepared under --dest.
+    Registry archives come from --cargo-home (the consumer's), and only crates in the
+    consumer's lock (--lock) are prepared. Prints and writes patches.json."""
+    os.environ["EGUI_AROS_CARGO_HOME"] = str(Path(args.cargo_home).resolve())
+    dest = Path(args.dest).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    crates = cmd_crates(args, quiet=True, lock=Path(args.lock).resolve(), dest_root=dest / "crates")
+    files = {p.relative_to(REPO / "crates" / "egui-aros").as_posix(): (p.read_bytes(), os.access(p, os.X_OK))
+             for p in (REPO / "crates" / "egui-aros").rglob("*") if p.is_file()}
+    sync_tree(files, dest / "egui-aros")
+    record = {"egui_aros": str(dest / "egui-aros"),
+              "egui_aros_tree_sha256": tree_hash(dest / "egui-aros"),
+              "upstreams": upstreams(),
+              "crates": crates}
+    (dest / "patches.json").write_text(json.dumps(record, indent=2) + "\n")
+    print(json.dumps(record, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -450,6 +473,11 @@ def main():
     b.add_argument("--worktree", action="store_true", help="build uncommitted files too (recorded as such)")
     b.add_argument("--online", action="store_true", help="allow cargo to download missing crates")
     b.set_defaults(func=cmd_build)
+    v = sub.add_parser("vendor", help="prepare egui-aros and its patched crates for a program that uses it")
+    v.add_argument("--dest", required=True, help="output directory")
+    v.add_argument("--cargo-home", required=True, help="CARGO_HOME holding the registry archives")
+    v.add_argument("--lock", required=True, help="the program's Cargo.lock")
+    v.set_defaults(func=cmd_vendor)
     args = parser.parse_args()
     try:
         args.func(args)

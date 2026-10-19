@@ -50,6 +50,56 @@ mod sys {
             outlen: i32,
         ) -> i32;
         pub fn ea_task_sigalloc() -> u32;
+        pub fn ea_open_url(url: *const c_char) -> i32;
+    }
+}
+
+/// Microseconds on the clock input events are stamped with. On AROS that is the system time
+/// (`CurrentTime`), and an input event's time is when input.device made it, so latency includes
+/// the time the event waited in the window's port. Elsewhere it is the time since the first
+/// call, and an event's time is when the loop received it.
+fn clock_us() -> i64 {
+    #[cfg(target_os = "aros")]
+    {
+        let (mut s, mut m) = (0u32, 0u32);
+        // SAFETY: two out-parameters.
+        unsafe { aros_gui_sys::aros_gui_system_time(&mut s, &mut m) };
+        s as i64 * 1_000_000 + m as i64
+    }
+    #[cfg(not(target_os = "aros"))]
+    {
+        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        START.get_or_init(Instant::now).elapsed().as_micros() as i64
+    }
+}
+
+/// The time of the input event being handled (see [`clock_us`]).
+fn event_time_us() -> i64 {
+    #[cfg(target_os = "aros")]
+    {
+        let (mut s, mut m) = (0u32, 0u32);
+        // SAFETY: two out-parameters; called on the loop's task while winit handles the message.
+        unsafe { aros_gui_sys::aros_gui_last_message_time(&mut s, &mut m) };
+        s as i64 * 1_000_000 + m as i64
+    }
+    #[cfg(not(target_os = "aros"))]
+    clock_us()
+}
+
+/// Opens a URL with the system's `OpenURL` command. Returns `false` if the URL holds characters
+/// that cannot be passed safely (quotes, `*`, spaces, control or non-ASCII bytes) or the command
+/// failed. Percent-encode such characters first.
+pub fn open_url(url: &str) -> bool {
+    #[cfg(target_os = "aros")]
+    {
+        let Ok(url) = std::ffi::CString::new(url) else { return false };
+        // SAFETY: a NUL-terminated string that outlives the call.
+        unsafe { sys::ea_open_url(url.as_ptr()) != 0 }
+    }
+    #[cfg(not(target_os = "aros"))]
+    {
+        let _ = url;
+        false
     }
 }
 
@@ -261,8 +311,10 @@ struct Running {
     renderer: raster::Renderer,
     info: ViewportInfo,
     close_requested: bool,
-    /// Arrival of the first and last input event since the last frame.
-    events: Option<(Instant, Instant, u32)>,
+    busy: bool,
+    /// Times ([`clock_us`]) of the oldest and newest input event since the last frame, and
+    /// their number.
+    events: Option<(i64, i64, u32)>,
 }
 
 struct Runner<'a> {
@@ -299,6 +351,7 @@ impl Runner<'_> {
             renderer: raster::Renderer::new(size.width as usize, size.height as usize),
             info,
             close_requested: false,
+            busy: false,
             events: None,
         });
         self.queue_redraw();
@@ -343,7 +396,24 @@ impl Runner<'_> {
         let ui_done = Instant::now();
 
         let r = self.running.as_mut().expect("the window is open during a frame");
-        r.state.handle_platform_output(&r.window, out.platform_output);
+        let mut platform_output = out.platform_output;
+        // egui-winit opens URLs with the `webbrowser` crate, which does not know AROS.
+        platform_output.commands.retain(|cmd| match cmd {
+            egui::OutputCommand::OpenUrl(open) => {
+                if !open_url(&open.url) {
+                    log::warn!("could not open {}", open.url);
+                }
+                false
+            }
+            _ => true,
+        });
+        // The AROS winit backend has no pointer shapes; the busy pointer is the one that matters.
+        let busy = platform_output.cursor_icon == egui::CursorIcon::Wait;
+        if busy != r.busy {
+            r.busy = busy;
+            WindowHandle(Rc::downgrade(&r.window)).set_busy(busy);
+        }
+        r.state.handle_platform_output(&r.window, platform_output);
         let mut closing = close_requested && self.app.close_requested();
         let mut next_repaint = None;
         if let Some(vo) = out.viewport_output.get(&ViewportId::ROOT) {
@@ -379,6 +449,7 @@ impl Runner<'_> {
         let rasterized = Instant::now();
         present(&r.window, &r.renderer);
         let shown = Instant::now();
+        let shown_us = clock_us();
         self.frames += 1;
 
         let report = FrameReport {
@@ -386,8 +457,8 @@ impl Runner<'_> {
             width: w as u32,
             height: h as u32,
             events: events.map_or(0, |e| e.2),
-            latency_oldest: events.map(|e| shown - e.0),
-            latency_newest: events.map(|e| shown - e.1),
+            latency_oldest: events.map(|e| Duration::from_micros((shown_us - e.0.min(e.1)).max(0) as u64)),
+            latency_newest: events.map(|e| Duration::from_micros((shown_us - e.0.max(e.1)).max(0) as u64)),
             waited,
             logic: logic_done - input_done,
             ui: ui_done - logic_done,
@@ -486,7 +557,7 @@ impl ApplicationHandler<()> for Runner<'_> {
             }
             WindowEvent::Destroyed => {}
             event => {
-                let now = Instant::now();
+                let now = event_time_us();
                 let is_input = matches!(
                     event,
                     WindowEvent::KeyboardInput { .. }
@@ -497,7 +568,7 @@ impl ApplicationHandler<()> for Runner<'_> {
                 let Some(r) = self.running.as_mut() else { return };
                 let response = r.state.on_window_event(&r.window, &event);
                 if is_input {
-                    r.events = Some(r.events.map_or((now, now, 1), |(first, _, n)| (first, now, n + 1)));
+                    r.events = Some(r.events.map_or((now, now, 1), |(old, new, n)| (old.min(now), new.max(now), n + 1)));
                 }
                 if response.repaint {
                     self.queue_redraw();

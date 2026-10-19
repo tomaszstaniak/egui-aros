@@ -18,6 +18,10 @@ winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] 
 raw-window-handle = "0.6.2"
 log = "0.4"
 
+[target.'cfg(target_os = "aros")'.dependencies]
+# The message time stamps for latency (with this repository's aros-gui-sys patch).
+aros-gui-sys = "0.1"
+
 [build-dependencies]
 cc = "1.2"
 
