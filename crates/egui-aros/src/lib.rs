@@ -51,6 +51,8 @@ mod sys {
         ) -> i32;
         pub fn ea_task_sigalloc() -> u32;
         pub fn ea_open_url(url: *const c_char) -> i32;
+        pub fn ea_beep();
+        pub fn ea_set_task_priority(pri: i32) -> i32;
     }
 }
 
@@ -99,6 +101,38 @@ pub fn open_url(url: &str) -> bool {
         let _ = url;
         false
     }
+}
+
+/// Flashes the screen (`DisplayBeep`), AROS's beep.
+pub fn beep() {
+    #[cfg(target_os = "aros")]
+    // SAFETY: no arguments.
+    unsafe {
+        sys::ea_beep()
+    };
+}
+
+/// Sets the calling task's priority and returns the previous one; a program that runs
+/// background work at priority 0 can step its loop aside with -1 meanwhile. `None` elsewhere.
+pub fn set_task_priority(pri: i32) -> Option<i32> {
+    #[cfg(target_os = "aros")]
+    // SAFETY: changes the calling task only.
+    return Some(unsafe { sys::ea_set_task_priority(pri) });
+    #[cfg(not(target_os = "aros"))]
+    {
+        let _ = pri;
+        None
+    }
+}
+
+/// Whether Caps Lock was on when the last input event the loop read was made (winit's
+/// modifiers do not include it). Read it from the loop's thread.
+pub fn caps_lock() -> bool {
+    #[cfg(target_os = "aros")]
+    // SAFETY: reads a value the glue keeps for the loop's task.
+    return unsafe { aros_gui_sys::aros_gui_last_message_qualifier() } & aros_gui_sys::IEQUALIFIER_CAPSLOCK != 0;
+    #[cfg(not(target_os = "aros"))]
+    false
 }
 
 /// The system clipboard's text (clipboard.device unit 0, IFF FTXT, read as ISO 8859-1), for

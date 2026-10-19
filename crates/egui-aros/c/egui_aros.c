@@ -161,6 +161,17 @@ int32_t ea_open_url(const char *url)
     return rc == 0;
 }
 
+void ea_beep(void)
+{
+    DisplayBeep(NULL);
+}
+
+/* Sets the calling task's priority and returns the previous one. */
+int32_t ea_set_task_priority(int32_t pri)
+{
+    return SetTaskPri(FindTask(NULL), pri);
+}
+
 /* The calling task's allocated signal mask: lets tests check that a run
  * gives back every signal it took. */
 uint32_t ea_task_sigalloc(void)
