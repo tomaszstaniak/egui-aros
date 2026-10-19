@@ -44,6 +44,7 @@ fn main() {
         clear_color: [0x1b, 0x1b, 0x1b],
         idle_poll: None,
         measure_paint: false,
+        title_suffix: String::new(),
     };
     let ctx = egui::Context::default();
     let stop = Arc::new(AtomicBool::new(false));

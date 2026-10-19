@@ -172,6 +172,23 @@ pub fn clipboard_text() -> Option<String> {
     None
 }
 
+/// Writes text to the system clipboard (as [`clipboard_text`] reads it; characters outside
+/// ISO 8859-1 become `?`). `false` if the clipboard could not be written.
+pub fn set_clipboard_text(text: &str) -> bool {
+    #[cfg(target_os = "aros")]
+    {
+        let bytes: Vec<u8> = text.chars().map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')).collect();
+        let Ok(len) = i32::try_from(bytes.len()) else { return false };
+        // SAFETY: `bytes` holds `len` bytes for the duration of the call.
+        unsafe { aros_gui_sys::aros_gui_clip_write(bytes.as_ptr(), len) == 0 }
+    }
+    #[cfg(not(target_os = "aros"))]
+    {
+        let _ = text;
+        false
+    }
+}
+
 /// The URL with spaces, quotes, `*`, every control character and every non-ASCII byte
 /// percent-encoded. It is quoted on an `OpenURL` command line: an unescaped quote would end the
 /// argument and let the rest of the URL run as further Shell input, and the ABIv11 Shell
@@ -224,6 +241,8 @@ pub struct Options {
     pub idle_poll: Option<Duration>,
     /// Collect the renderer's per-kind statistics ([`raster::Renderer::stats`]); costs a little.
     pub measure_paint: bool,
+    /// Appended to every window title, the first one and those egui sets (a build label).
+    pub title_suffix: String,
 }
 
 impl Default for Options {
@@ -235,6 +254,7 @@ impl Default for Options {
             clear_color: [0, 0, 0],
             idle_poll: None,
             measure_paint: false,
+            title_suffix: String::new(),
         }
     }
 }
@@ -454,8 +474,9 @@ struct Runner<'a> {
 impl Runner<'_> {
     fn open(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Error> {
         let (w, h) = self.options.inner_size;
-        let mut attributes =
-            Window::default_attributes().with_title(self.options.title.clone()).with_inner_size(winit::dpi::PhysicalSize::new(w, h));
+        let mut attributes = Window::default_attributes()
+            .with_title(format!("{}{}", self.options.title, self.options.title_suffix))
+            .with_inner_size(winit::dpi::PhysicalSize::new(w, h));
         if let Some((w, h)) = self.options.min_inner_size {
             attributes = attributes.with_min_inner_size(winit::dpi::PhysicalSize::new(w, h));
         }
@@ -549,6 +570,9 @@ impl Runner<'_> {
                 match cmd {
                     ViewportCommand::Close => closing = true,
                     ViewportCommand::CancelClose => closing = false,
+                    ViewportCommand::Title(title) if !self.options.title_suffix.is_empty() => {
+                        commands.push(ViewportCommand::Title(format!("{title}{}", self.options.title_suffix)))
+                    }
                     other => commands.push(other.clone()),
                 }
             }
