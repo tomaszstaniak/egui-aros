@@ -86,13 +86,11 @@ fn event_time_us() -> i64 {
     clock_us()
 }
 
-/// Opens a URL with the system's `OpenURL` command. Returns `false` if the URL holds characters
-/// that cannot be passed safely (quotes, `*`, spaces, control or non-ASCII bytes) or the command
-/// failed. Percent-encode such characters first.
+/// Opens a URL with the system's `OpenURL` command; `false` if the command failed.
 pub fn open_url(url: &str) -> bool {
     #[cfg(target_os = "aros")]
     {
-        let Ok(url) = std::ffi::CString::new(url) else { return false };
+        let Ok(url) = std::ffi::CString::new(shell_safe_url(url)) else { return false };
         // SAFETY: a NUL-terminated string that outlives the call.
         unsafe { sys::ea_open_url(url.as_ptr()) != 0 }
     }
@@ -100,6 +98,57 @@ pub fn open_url(url: &str) -> bool {
     {
         let _ = url;
         false
+    }
+}
+
+/// The system clipboard's text (clipboard.device unit 0, IFF FTXT, read as ISO 8859-1), for
+/// programs that read it outside egui's own paste (which goes through egui-winit's clipboard).
+pub fn clipboard_text() -> Option<String> {
+    #[cfg(target_os = "aros")]
+    {
+        let mut len = 0;
+        // SAFETY: an out-parameter; the returned buffer is freed with aros_gui_clip_free below.
+        let text = unsafe { aros_gui_sys::aros_gui_clip_read(&mut len) };
+        if text.is_null() {
+            return None;
+        }
+        // SAFETY: the glue returns `len` bytes at `text`.
+        let out = unsafe { std::slice::from_raw_parts(text, len.max(0) as usize) }.iter().map(|&b| char::from(b)).collect();
+        // SAFETY: allocated by aros_gui_clip_read.
+        unsafe { aros_gui_sys::aros_gui_clip_free(text) };
+        Some(out)
+    }
+    #[cfg(not(target_os = "aros"))]
+    None
+}
+
+/// The URL with spaces, quotes, `*`, every control character and every non-ASCII byte
+/// percent-encoded. It is quoted on an `OpenURL` command line: an unescaped quote would end the
+/// argument and let the rest of the URL run as further Shell input, and the ABIv11 Shell
+/// miscounts `*"` escapes, so the characters are encoded rather than escaped. (From the WordCraft
+/// AROS shell.)
+#[cfg_attr(not(target_os = "aros"), allow(dead_code))]
+fn shell_safe_url(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    for b in url.bytes() {
+        if b.is_ascii_graphic() && b != b'"' && b != b'*' {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_safe_url;
+
+    #[test]
+    fn urls_cannot_leave_their_quotes() {
+        assert_eq!(shell_safe_url("https://example.org/a?b=c#d"), "https://example.org/a?b=c#d");
+        assert_eq!(shell_safe_url("x\" ; Delete SYS:"), "x%22%20;%20Delete%20SYS:");
+        assert_eq!(shell_safe_url("a*b\n\u{e9}"), "a%2Ab%0A%C3%A9");
     }
 }
 
