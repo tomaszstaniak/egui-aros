@@ -38,7 +38,8 @@ PTHREAD_CFLAGS = ["-O2", "-mcmodel=large", "-fno-omit-frame-pointer"]
 # The members patches/aros-pthread changes; only these are linked from the private build.
 PTHREAD_PATCHED = ("pthread", "pthread_create")
 # Package -> the AROS binary it produces.
-PACKAGES = {"egui-aros-glow-probe": "egui-aros-glow-probe"}
+PACKAGES = {"egui-aros-glow-probe": "egui-aros-glow-probe",
+            "egui-aros-lifecycle-probe": "egui-aros-lifecycle-probe"}
 
 
 class Failure(Exception):

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["examples/glow-probe"]
+members = ["examples/glow-probe", "examples/lifecycle-probe"]
 
 [profile.release]
 opt-level = 3

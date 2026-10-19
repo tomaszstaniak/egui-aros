@@ -1,0 +1,12 @@
+.KEY NAME/A,SIZE/A,FRAMES/A
+; egui-aros glow probe: <FRAMES> continuously repainted frames at <SIZE>
+FailAt 21
+Protect RAM:ea/egui-aros-glow-probe +e
+Stack 4000000
+SetEnv EGUI_PROBE_REPORT RAM:ea/<NAME>.txt
+SetEnv EGUI_PROBE_FRAMES <FRAMES>
+SetEnv EGUI_PROBE_SIZE <SIZE>
+RAM:ea/egui-aros-glow-probe >RAM:ea/<NAME>-stdout.txt
+Echo $RC >RESULTS:<NAME>.rc
+Copy RAM:ea/<NAME>.txt RESULTS:<NAME>-report.txt
+Echo "<NAME> done" >RESULTS:<NAME>-done.txt

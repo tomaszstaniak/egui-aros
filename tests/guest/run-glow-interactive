@@ -1,0 +1,12 @@
+; egui-aros glow probe RUN, interactive: no frame limit
+FailAt 21
+Protect RAM:ea/egui-aros-glow-probe +e
+Stack 4000000
+SetEnv EGUI_PROBE_REPORT RAM:ea/report-i.txt
+UnSetEnv EGUI_PROBE_FRAMES
+Echo "RUN start" >RESULTS:RUN-start.txt
+RAM:ea/egui-aros-glow-probe >RAM:ea/stdout-i.txt
+Echo $RC >RESULTS:RUN-probe.rc
+Copy RAM:ea/stdout-i.txt RESULTS:RUN-stdout.txt
+Copy RAM:ea/report-i.txt RESULTS:RUN-report.txt
+Echo "RUN done" >RESULTS:RUN-done.txt

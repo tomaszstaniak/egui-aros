@@ -1,0 +1,13 @@
+; egui-aros glow probe RUN: start, GL strings, 300 frames, exit code
+FailAt 21
+Protect RAM:ea/egui-aros-glow-probe +e
+Stack 4000000
+SetEnv EGUI_PROBE_REPORT RAM:ea/report.txt
+SetEnv EGUI_PROBE_FRAMES 300
+SetEnv RUST_BACKTRACE 1
+Echo "RUN start" >RESULTS:RUN-start.txt
+RAM:ea/egui-aros-glow-probe >RAM:ea/stdout.txt
+Echo $RC >RESULTS:RUN-probe.rc
+Copy RAM:ea/stdout.txt RESULTS:RUN-stdout.txt
+Copy RAM:ea/report.txt RESULTS:RUN-report.txt
+Echo "RUN done" >RESULTS:RUN-done.txt

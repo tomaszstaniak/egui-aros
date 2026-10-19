@@ -1,0 +1,13 @@
+; egui-aros lifecycle probe RUN: tc_SigAlloc around each winit/glutin step
+FailAt 21
+Protect RAM:ea/egui-aros-lifecycle-probe +e
+Stack 1000000
+RAM:ea/egui-aros-lifecycle-probe loop >RESULTS:RUN-lc-loop.txt
+Echo $RC >RESULTS:RUN-lc-loop.rc
+RAM:ea/egui-aros-lifecycle-probe window >RESULTS:RUN-lc-window.txt
+Echo $RC >RESULTS:RUN-lc-window.rc
+RAM:ea/egui-aros-lifecycle-probe context >RESULTS:RUN-lc-context.txt
+Echo $RC >RESULTS:RUN-lc-context.rc
+RAM:ea/egui-aros-lifecycle-probe swap >RESULTS:RUN-lc-swap.txt
+Echo $RC >RESULTS:RUN-lc-swap.rc
+Echo "RUN lifecycle done" >RESULTS:RUN-lc-done.txt

@@ -1,0 +1,94 @@
+From: egui-aros
+Subject: [PATCH] eframe: run the AROS event loop with run_app
+
+Crate: eframe 0.36.2 (crates.io, checksum
+  55ad41fac6e3149abb4866e93df37dbd33baa95db525c3368c944584e95a5dc2).
+Date: 2026-10-19
+Problem: eframe's default run mode (NativeOptions::run_and_return) and
+  EframeWinitApplication::pump_eframe_app use winit's run_on_demand and
+  pump_events extensions, which winit offers only on Windows, macOS,
+  Android, X11 and Wayland. The AROS winit backend (contrib
+  winit-0.30.13-aros.diff) has neither, so eframe does not compile.
+Rationale: the AROS backend's EventLoop::run returns when the loop exits
+  (it does not end the process), so run_app gives the same observable result
+  as run_and_return for one eframe window: run_native returns after the
+  window is closed and the app's on_exit has run. The run-on-demand and pump
+  paths are compiled out on AROS, as they are on iOS.
+Scope: cfg gates of six items in native/run.rs and one re-export in lib.rs.
+Upstream-status: candidate for the AROS contrib crate store (not submitted).
+Limitations: run_native can be called only once per process on AROS (the
+  thread-local loop reuse needs run_on_demand); pump_eframe_app and
+  EframePumpStatus do not exist on AROS.
+Prerequisites: 0001-aros-glutin-without-egl.patch.
+Verification: see the egui-aros build records.
+Removal: when the AROS winit backend implements run_on_demand.
+---
+diff --color -ruN eframe-step1/src/lib.rs eframe-0.36.2/src/lib.rs
+--- eframe-0.36.2.orig/src/lib.rs	2026-10-19 11:10:11
++++ eframe-0.36.2/src/lib.rs	2026-10-19 11:10:11
+@@ -197,7 +197,7 @@
+ #[cfg(any(feature = "glow", feature = "wgpu_no_default_features"))]
+ pub use native::run::EframeWinitApplication;
+ 
+-#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
++#[cfg(not(any(target_arch = "wasm32", target_os = "ios", target_os = "aros")))]
+ #[cfg(any(feature = "glow", feature = "wgpu_no_default_features"))]
+ pub use native::run::EframePumpStatus;
+ 
+diff --color -ruN eframe-step1/src/native/run.rs eframe-0.36.2/src/native/run.rs
+--- eframe-0.36.2.orig/src/native/run.rs	2026-10-19 11:10:11
++++ eframe-0.36.2/src/native/run.rs	2026-10-19 11:10:11
+@@ -54,7 +54,7 @@
+ ///
+ /// We reuse the event-loop so we can support closing and opening an eframe window
+ /// multiple times. This is just a limitation of winit.
+-#[cfg(not(target_os = "ios"))]
++#[cfg(not(any(target_os = "ios", target_os = "aros")))]
+ fn with_event_loop<R>(
+     mut native_options: epi::NativeOptions,
+     f: impl FnOnce(&mut EventLoop<UserEvent>, epi::NativeOptions) -> R,
+@@ -382,7 +382,7 @@
+     }
+ }
+ 
+-#[cfg(not(target_os = "ios"))]
++#[cfg(not(any(target_os = "ios", target_os = "aros")))]
+ fn run_and_return(event_loop: &mut EventLoop<UserEvent>, winit_app: impl WinitApp) -> Result {
+     use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
+ 
+@@ -416,7 +416,7 @@
+ ) -> Result {
+     use super::glow_integration::GlowWinitApp;
+ 
+-    #[cfg(not(target_os = "ios"))]
++    #[cfg(not(any(target_os = "ios", target_os = "aros")))]
+     if native_options.run_and_return {
+         return with_event_loop(native_options, |event_loop, native_options| {
+             let glow_eframe =
+@@ -455,7 +455,7 @@
+ ) -> Result {
+     use super::wgpu_integration::WgpuWinitApp;
+ 
+-    #[cfg(not(target_os = "ios"))]
++    #[cfg(not(any(target_os = "ios", target_os = "aros")))]
+     if native_options.run_and_return {
+         return with_event_loop(native_options, |event_loop, native_options| {
+             let wgpu_eframe =
+@@ -558,7 +558,7 @@
+     ///
+     /// This is useful when your [`EventLoop`] is not the main event loop for your application.
+     /// See the `external_eventloop_async` example.
+-    #[cfg(not(target_os = "ios"))]
++    #[cfg(not(any(target_os = "ios", target_os = "aros")))]
+     pub fn pump_eframe_app(
+         &mut self,
+         event_loop: &mut EventLoop<UserEvent>,
+@@ -576,7 +576,7 @@
+ /// Either an exit code or a [`ControlFlow`] from the [`ActiveEventLoop`].
+ ///
+ /// The result of [`EframeWinitApplication::pump_eframe_app`].
+-#[cfg(not(target_os = "ios"))]
++#[cfg(not(any(target_os = "ios", target_os = "aros")))]
+ pub enum EframePumpStatus {
+     /// The final state of the [`ControlFlow`] after all events have been dispatched
+     ///

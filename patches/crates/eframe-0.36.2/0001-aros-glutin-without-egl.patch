@@ -1,0 +1,55 @@
+From: egui-aros
+Subject: [PATCH] eframe: do not request glutin's EGL and WGL backends on AROS
+
+Crate: eframe 0.36.2 (crates.io, checksum
+  55ad41fac6e3149abb4866e93df37dbd33baa95db525c3368c944584e95a5dc2).
+Date: 2026-10-19
+Problem: eframe enables glutin's and glutin-winit's `egl` and `wgl` features
+  on every non-wasm target. On AROS glutin then builds libloading for EGL,
+  which needs dlopen/dlsym that the AROS libc does not provide, and
+  glutin-winit selects an EGL display that AROS glutin does not have.
+Rationale: on AROS glutin picks its GLA backend by target, with no feature;
+  the same optional dependencies are declared for AROS without features, so
+  the `glow` feature still enables them.
+Scope: Cargo.toml target tables only.
+Upstream-status: candidate for the AROS contrib crate store (not submitted).
+Prerequisites: glutin-winit 0001-aros-gla-backend.patch.
+Verification: see the egui-aros build records.
+Removal: when eframe or the AROS crate store expresses this differently.
+---
+diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json eframe-0.36.2.orig/Cargo.toml eframe-0.36.2/Cargo.toml
+--- eframe-0.36.2.orig/Cargo.toml	2026-10-19 11:07:05
++++ eframe-0.36.2/Cargo.toml	2026-10-19 11:07:17
+@@ -236,7 +236,7 @@
+ features = ["clipboard"]
+ default-features = false
+ 
+-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.glutin]
++[target.'cfg(not(any(target_arch = "wasm32", target_os = "aros")))'.dependencies.glutin]
+ version = "0.32.3"
+ features = [
+     "egl",
+@@ -245,12 +245,22 @@
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.glutin-winit]
++[target.'cfg(not(any(target_arch = "wasm32", target_os = "aros")))'.dependencies.glutin-winit]
+ version = "0.5.0"
+ features = [
+     "egl",
+     "wgl",
+ ]
++optional = true
++default-features = false
++
++[target.'cfg(target_os = "aros")'.dependencies.glutin]
++version = "0.32.3"
++optional = true
++default-features = false
++
++[target.'cfg(target_os = "aros")'.dependencies.glutin-winit]
++version = "0.5.0"
+ optional = true
+ default-features = false
+ 
