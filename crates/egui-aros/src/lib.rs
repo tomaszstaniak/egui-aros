@@ -103,6 +103,22 @@ pub fn open_url(url: &str) -> bool {
     }
 }
 
+/// The Workbench screen's size in pixels, for choosing a window size before [`run`]; `None` if
+/// the screen cannot be locked (or on other systems).
+pub fn screen_size() -> Option<(u32, u32)> {
+    #[cfg(target_os = "aros")]
+    {
+        let (mut w, mut h) = (0, 0);
+        // SAFETY: two out-parameters.
+        if unsafe { aros_gui_sys::aros_gui_screen_size(&mut w, &mut h) } == 0 {
+            return Some((w.max(0) as u32, h.max(0) as u32));
+        }
+        None
+    }
+    #[cfg(not(target_os = "aros"))]
+    None
+}
+
 /// Flashes the screen (`DisplayBeep`), AROS's beep.
 pub fn beep() {
     #[cfg(target_os = "aros")]
