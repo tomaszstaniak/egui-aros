@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["examples/glow-probe", "examples/lifecycle-probe"]
+members = ["crates/egui-aros", "examples/glow-probe", "examples/lifecycle-probe", "examples/cpu-probe"]
 
 [profile.release]
 opt-level = 3

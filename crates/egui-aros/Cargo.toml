@@ -1,0 +1,25 @@
+[package]
+name = "egui-aros"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Runs egui programs in an Intuition window on AROS: winit and egui-winit for the window and input, a CPU renderer for the pixels"
+
+[features]
+default = []
+# ASL file and drawer requesters that return absolute paths.
+asl = []
+
+[dependencies]
+egui = { version = "=0.36.2", default-features = false }
+egui-winit = { version = "=0.36.2", default-features = false, features = ["clipboard"] }
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
+raw-window-handle = "0.6.2"
+log = "0.4"
+
+[build-dependencies]
+cc = "1.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("aros"))'] }

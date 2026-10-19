@@ -445,10 +445,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-aros"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "egui",
+ "egui-winit",
+ "log",
+ "raw-window-handle",
+ "winit",
+]
+
+[[package]]
+name = "egui-aros-cpu-probe"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui-aros",
+]
+
+[[package]]
 name = "egui-aros-glow-probe"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "egui",
+ "egui-aros",
+]
+
+[[package]]
+name = "egui-aros-lifecycle-probe"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "glutin",
+ "glutin-winit",
+ "raw-window-handle",
+ "winit",
 ]
 
 [[package]]

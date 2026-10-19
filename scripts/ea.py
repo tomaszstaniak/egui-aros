@@ -39,7 +39,8 @@ PTHREAD_CFLAGS = ["-O2", "-mcmodel=large", "-fno-omit-frame-pointer"]
 PTHREAD_PATCHED = ("pthread", "pthread_create")
 # Package -> the AROS binary it produces.
 PACKAGES = {"egui-aros-glow-probe": "egui-aros-glow-probe",
-            "egui-aros-lifecycle-probe": "egui-aros-lifecycle-probe"}
+            "egui-aros-lifecycle-probe": "egui-aros-lifecycle-probe",
+            "egui-aros-cpu-probe": "egui-aros-cpu-probe"}
 
 
 class Failure(Exception):
