@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/egui-aros", "examples/glow-probe", "examples/lifecycle-probe", "examples/cpu-probe"]
+
+[profile.release]
+opt-level = 3
+debug = false

@@ -1,0 +1,15 @@
+{
+  "id": "aros-artcraft-egui-aros",
+  "profiles": [
+    "aros",
+    "upstream-patches"
+  ],
+  "structure_version": 3,
+  "standards_reviewed": "0.4-proposal",
+  "standards_adoption": {
+    "mode": "pilot",
+    "release": "0.4-proposal",
+    "decision": "../docs/project-adaptations.md#standard-adoption"
+  },
+  "adaptations": "../docs/project-adaptations.md"
+}

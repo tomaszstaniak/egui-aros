@@ -1,0 +1,101 @@
+From: egui-aros
+Subject: [PATCH] aros-gui-sys: the last message's time stamp, qualifier and the system time
+
+Repository: aros-development-team/AROS bf7075aab8480cf36bdc13b4382ccbd6098c8a0d,
+  tools/crosstools/rust/crates/aros-gui-sys.
+Date: 2026-10-19
+Problem: a program measuring input latency needs when input.device made an
+  event, not when its event loop got to it: under load messages wait in the
+  window's port for a whole frame or more. winit's events carry no time, and
+  the IntuiMessage's Seconds/Micros are dropped when the message is copied out.
+Rationale: aros_gui_window_next_message() keeps the time stamp of the
+  message it returns; a caller that runs on the loop's task (winit calls its
+  handler for each message before reading the next) reads it with
+  aros_gui_last_message_time() and compares it with aros_gui_system_time(),
+  which uses the same clock (CurrentTime).
+  The message's qualifier is kept the same way: winit's events carry the
+  modifier state but not Caps Lock, which a program may need (PhotoCraft's
+  shell read it from the last message).
+Scope: three functions and three statics; the message structure is unchanged.
+Upstream-status: local-only for now (a measurement aid; candidate if the
+  AROS crate store wants it).
+Verification: see the egui-aros build records.
+Removal: when the event loop exposes event times another way.
+---
+diff --color -ruN aros-gui-sys-0.1.0.orig/src/glue.c aros-gui-sys-0.1.0/src/glue.c
+--- aros-gui-sys-0.1.0.orig/src/glue.c	2026-10-19 11:54:56
++++ aros-gui-sys-0.1.0/src/glue.c	2026-10-19 13:09:36
+@@ -259,6 +259,30 @@
+     return (window->Flags & WFLG_WINDOWACTIVE) != 0;
+ }
+ 
++/* The last message's time stamp; only the task running the event loop reads
++   messages, so a static is enough. */
++static ULONG last_seconds, last_micros;
++static UWORD last_qualifier;
++
++uint16_t aros_gui_last_message_qualifier(void)
++{
++    return last_qualifier;
++}
++
++void aros_gui_last_message_time(uint32_t *seconds, uint32_t *micros)
++{
++    *seconds = last_seconds;
++    *micros = last_micros;
++}
++
++void aros_gui_system_time(uint32_t *seconds, uint32_t *micros)
++{
++    ULONG s, m;
++    CurrentTime(&s, &m);
++    *seconds = s;
++    *micros = m;
++}
++
+ /* Copies the next pending message into `out` and replies it. Returns 0 when
+    the port is empty. */
+ int aros_gui_window_next_message(uintptr_t handle, struct aros_gui_message *out)
+@@ -269,6 +293,9 @@
+     if (!msg)
+         return 0;
+ 
++    last_seconds = msg->Seconds;
++    last_micros = msg->Micros;
++    last_qualifier = msg->Qualifier;
+     out->class = msg->Class;
+     out->code = msg->Code;
+     out->qualifier = msg->Qualifier;
+diff --color -ruN aros-gui-sys-0.1.0.orig/src/glue.h aros-gui-sys-0.1.0/src/glue.h
+--- aros-gui-sys-0.1.0.orig/src/glue.h	2026-10-19 11:54:56
++++ aros-gui-sys-0.1.0/src/glue.h	2026-10-19 13:09:36
+@@ -59,6 +59,15 @@
+ void aros_gui_window_set_delta_move(uintptr_t window, int on);
+ int aros_gui_window_delta_move(uintptr_t window);
+ 
++/* When input.device made the message that aros_gui_window_next_message() last
++   returned (IntuiMessage Seconds/Micros), and the system time on the same clock:
++   their difference is how long an event waited before the program read it. */
++void aros_gui_last_message_time(uint32_t *seconds, uint32_t *micros);
++void aros_gui_system_time(uint32_t *seconds, uint32_t *micros);
++/* The qualifier (IEQUALIFIER_*) of that message: the state of the modifier keys,
++   Caps Lock included, when input.device made it. */
++uint16_t aros_gui_last_message_qualifier(void);
++
+ /* Text for a raw key through the current keymap, in ISO-8859-1. */
+ int aros_gui_map_rawkey(uint16_t code, uint16_t qualifier, char *buf, int len);
+ 
+diff --color -ruN aros-gui-sys-0.1.0.orig/src/lib.rs aros-gui-sys-0.1.0/src/lib.rs
+--- aros-gui-sys-0.1.0.orig/src/lib.rs	2026-10-19 11:54:56
++++ aros-gui-sys-0.1.0/src/lib.rs	2026-10-19 13:09:36
+@@ -101,6 +101,10 @@
+     pub fn aros_gui_window_set_delta_move(window: usize, on: c_int);
+     pub fn aros_gui_window_delta_move(window: usize) -> c_int;
+ 
++    pub fn aros_gui_last_message_time(seconds: *mut u32, micros: *mut u32);
++    pub fn aros_gui_system_time(seconds: *mut u32, micros: *mut u32);
++    pub fn aros_gui_last_message_qualifier() -> u16;
++
+     pub fn aros_gui_map_rawkey(code: u16, qualifier: u16, buf: *mut c_char, len: c_int) -> c_int;
+ 
+     pub fn aros_gui_task_self() -> *mut c_void;

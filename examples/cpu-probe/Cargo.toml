@@ -1,0 +1,15 @@
+[package]
+name = "egui-aros-cpu-probe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "The probe scene on egui-aros: winit and egui-winit with the CPU renderer"
+
+[features]
+# The same scene drawn with OpenGL through egui-aros.
+glow = ["egui-aros/glow"]
+
+[dependencies]
+egui = { version = "=0.36.2", default-features = false, features = ["default_fonts"] }
+egui-aros = { path = "../../crates/egui-aros" }

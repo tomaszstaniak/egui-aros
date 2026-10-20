@@ -1,0 +1,30 @@
+From: PhotoCraft AROS port
+Subject: [PATCH] libc-aros: declare memchr
+
+Repository: rust-aros, std-groundwork/libc-aros at
+  49324c45b4dc89c7046eb3cb39097c59ce36e6f3 (libc 0.2.189 replacement).
+Date: 2026-10-16
+Problem: tokio-util 0.7.19 (through rmcp) calls libc::memchr on unix-family
+  targets; libc-aros does not declare it, so PhotoCraft's MCP CLI did not
+  compile for x86_64 ABIv11.
+Rationale: the AROS C library provides memchr exactly as it provides strlen
+  and memcpy (the SDK's libstdlib.a and libstdc.static.a export it); only
+  the Rust declaration was missing.
+Scope: one extern declaration.
+Upstream-status: candidate for rust-aros (not submitted).
+Prerequisites: none.
+Verification: photocraft-cli builds and links for x86_64 ABIv11.
+Removal: when rust-aros libc-aros declares memchr.
+---
+diff --git a/src/lib.rs b/src/lib.rs
+index a017c8f..afd6a5d 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -328,6 +328,7 @@ extern "C" {
+     pub fn strerror(errnum: c_int) -> *mut c_char;
+     pub fn strlen(s: *const c_char) -> size_t;
+     pub fn memcpy(dst: *mut c_void, src: *const c_void, n: size_t) -> *mut c_void;
++    pub fn memchr(cx: *const c_void, c: c_int, n: size_t) -> *mut c_void;
+     pub fn malloc(size: size_t) -> *mut c_void;
+     pub fn calloc(n: size_t, size: size_t) -> *mut c_void;
+     pub fn realloc(p: *mut c_void, size: size_t) -> *mut c_void;

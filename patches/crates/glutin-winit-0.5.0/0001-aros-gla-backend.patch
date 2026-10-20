@@ -1,0 +1,73 @@
+From: egui-aros
+Subject: [PATCH] glutin-winit: select glutin's GLA display on AROS
+
+Crate: glutin-winit 0.5.0 (crates.io, checksum
+  85edca7075f8fc728f28cb8fbb111a96c3b89e930574369e3e9c27eb75d3788f).
+Date: 2026-10-19
+Problem: on AROS (a unix-family target) the `egl` feature enables
+  egl_backend, so create_display() asks glutin for DisplayApiPreference::Egl.
+  The AROS glutin (contrib glutin-0.32.3-aros.diff) has no EGL backend, only
+  GLA, so glutin-winit does not compile for x86_64-aros.
+Rationale: the same cfg aliases as the contrib glutin change (aros_platform,
+  gla_backend; no free_unix, no egl_backend on AROS), and GLA as the display
+  preference.
+Scope: build.rs aliases, the backend check and one preference line.
+Upstream-status: candidate for the AROS contrib crate store (not submitted).
+Prerequisites: contrib glutin-0.32.3-aros.diff, raw-window-handle-0.6.2-aros.diff.
+Verification: see the egui-aros build records (compile/link only until a
+  runtime result is recorded).
+Removal: when the contrib crate store carries an equivalent glutin-winit diff.
+---
+diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json glutin-winit-0.5.0.orig/build.rs glutin-winit-0.5.0/build.rs
+--- glutin-winit-0.5.0.orig/build.rs	2026-10-19 11:07:05
++++ glutin-winit-0.5.0/build.rs	2026-10-19 11:07:17
+@@ -10,17 +10,19 @@
+         wasm_platform: { target_family = "wasm" },
+         macos_platform: { target_os = "macos" },
+         ios_platform: { target_os = "ios" },
++        aros_platform: { target_os = "aros" },
+         apple: { any(ios_platform, macos_platform) },
+-        free_unix: { all(unix, not(apple), not(android_platform)) },
++        free_unix: { all(unix, not(apple), not(android_platform), not(aros_platform)) },
+ 
+         // Native displays.
+         x11_platform: { all(feature = "x11", free_unix, not(wasm_platform)) },
+         wayland_platform: { all(feature = "wayland", free_unix, not(wasm_platform)) },
+ 
+         // Backends.
+-        egl_backend: { all(feature = "egl", any(windows, unix), not(apple), not(wasm_platform)) },
++        egl_backend: { all(feature = "egl", any(windows, unix), not(apple), not(wasm_platform), not(aros_platform)) },
+         glx_backend: { all(feature = "glx", x11_platform, not(wasm_platform)) },
+         wgl_backend: { all(feature = "wgl", windows, not(wasm_platform)) },
+         cgl_backend: { all(macos_platform, not(wasm_platform)) },
++        gla_backend: { aros_platform },
+     }
+ }
+diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json glutin-winit-0.5.0.orig/src/lib.rs glutin-winit-0.5.0/src/lib.rs
+--- glutin-winit-0.5.0.orig/src/lib.rs	2026-10-19 11:07:05
++++ glutin-winit-0.5.0/src/lib.rs	2026-10-19 11:07:17
+@@ -34,7 +34,13 @@
+ #[cfg(x11_platform)]
+ use winit::platform::x11::WindowAttributesExtX11;
+ 
+-#[cfg(all(not(egl_backend), not(glx_backend), not(wgl_backend), not(cgl_backend)))]
++#[cfg(all(
++    not(egl_backend),
++    not(glx_backend),
++    not(wgl_backend),
++    not(cgl_backend),
++    not(gla_backend)
++))]
+ compile_error!("Please select at least one api backend");
+ 
+ pub(crate) mod private {
+@@ -164,6 +170,9 @@
+ 
+     #[cfg(wgl_backend)]
+     let _preference = DisplayApiPreference::Wgl(_raw_window_handle);
++
++    #[cfg(gla_backend)]
++    let _preference = DisplayApiPreference::Gla;
+ 
+     #[cfg(all(egl_backend, glx_backend))]
+     let _preference = match _api_preference {

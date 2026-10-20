@@ -1,0 +1,8 @@
+{
+  "aros_gcc": "/path/to/Work/AROS/toolchain/x86_64-aros-gcc",
+  "aros_ar": "/path/to/Work/AROS/toolchain/x86_64-aros-ar",
+  "aros_sdk": "/path/to/Work/AROS/sdk",
+  "rust_aros": "/path/to/Work/AROS-dev/rust-aros",
+  "toolchain": "aros-net-20261016",
+  "aros_src": "/path/to/Work/AROS/aros-src"
+}

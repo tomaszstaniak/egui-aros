@@ -1,0 +1,32 @@
+From: egui-aros
+Subject: [PATCH] egui-winit: the Amiga keys are command keys on AROS
+
+Crate: egui-winit 0.36.2 (crates.io, checksum
+  98466000559d66ba4db786a30448b01483946add4188e7f10f522a27b4fb89cc).
+Date: 2026-10-19
+Problem: the AROS winit backend reports the left and right Amiga keys as
+  Super. Outside macOS egui-winit takes `command` from Ctrl only and drops
+  Super, so Amiga+C, Amiga+X, Amiga+V and every other Amiga shortcut do
+  nothing in egui programs; on AROS these are the usual command keys (the
+  shells of the PhotoCraft, WordCraft and PdfCraft AROS ports treat them so).
+Rationale: on AROS `command` is Ctrl or an Amiga key; `ctrl` stays Ctrl, so
+  programs that ask for Ctrl specifically are unchanged.
+Scope: one expression.
+Upstream-status: candidate for the AROS contrib crate store (not submitted).
+Prerequisites: 0001-aros-system-clipboard.patch.
+Verification: see the egui-aros build records.
+Removal: when the AROS crate store carries an equivalent change.
+---
+diff --color -ruN egui-winit-step1/src/lib.rs egui-winit-0.36.2/src/lib.rs
+--- egui-winit-0.36.2.orig/src/lib.rs	2026-10-19 12:06:55
++++ egui-winit-0.36.2/src/lib.rs	2026-10-19 12:06:55
+@@ -495,6 +495,9 @@
+                 self.modifiers.mac_cmd = cfg!(target_os = "macos") && super_;
+                 self.modifiers.command = if cfg!(target_os = "macos") {
+                     super_
++                } else if cfg!(target_os = "aros") {
++                    // The Amiga keys (winit's Super) are AROS's command keys: Amiga+C copies.
++                    ctrl || super_
+                 } else {
+                     ctrl
+                 };
