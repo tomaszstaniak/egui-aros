@@ -5,10 +5,11 @@ for x86_64 ABIv11 (such as AROS One 1.3): an Intuition window, keyboard,
 mouse and wheel input, repaint scheduling, the text clipboard and rendering
 for egui programs, shared by several ports instead of being copied into each.
 
-The first stage is a minimal eframe/glow program
-([examples/glow-probe](examples/glow-probe)) that checks whether the standard
-egui desktop stack (eframe, egui-winit, glutin, winit) runs on AROS on top of
-the AROS crates that already exist upstream.
+The library (`crates/egui-aros`) runs an egui program in an Intuition window with a CPU
+renderer; an OpenGL renderer through gl.library is optional (feature `glow`). The AROS ports of
+WordCraft, PhotoCraft, DeckCraft and GridCraft use it, pinned by commit. The examples
+(`examples/`) are the probes it was measured with: a CPU-rendered scene, the same scene through
+eframe and glow, and a lifecycle test.
 
 ## Start here
 
