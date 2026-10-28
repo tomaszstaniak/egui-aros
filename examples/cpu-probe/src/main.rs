@@ -2,7 +2,8 @@
 //! input, the CPU renderer for the pixels. Same environment variables as the glow probe, and
 //! `EGUI_PROBE_WAKER=1`: another thread requests a repaint every millisecond while the window
 //! is open, while it closes, and for half a second after `run` has returned (late wake-ups must
-//! do nothing).
+//! do nothing). `EGUI_PROBE_RENDERER=cpu|auto|gpu` chooses [`egui_aros::RendererRequest`]
+//! (default: auto when built with the `glow` feature, else cpu).
 
 #[path = "../../common/probe.rs"]
 mod probe;
@@ -49,6 +50,13 @@ fn main() {
         idle_poll: None,
         measure_paint: false,
         title_suffix: String::new(),
+        renderer: match std::env::var("EGUI_PROBE_RENDERER").as_deref() {
+            Ok("cpu") => egui_aros::RendererRequest::Cpu,
+            Ok("auto") => egui_aros::RendererRequest::Auto,
+            Ok("gpu") => egui_aros::RendererRequest::Gpu,
+            _ if cfg!(feature = "glow") => egui_aros::RendererRequest::Auto,
+            _ => egui_aros::RendererRequest::Cpu,
+        },
     };
     let ctx = egui::Context::default();
     let stop = Arc::new(AtomicBool::new(false));
@@ -71,10 +79,13 @@ fn main() {
         let _ = waker.join();
     }
     let signals_at_end = egui_aros::task_signals();
+    let renderer = egui_aros::renderer_info().map_or_else(|| "none".to_owned(), |i| i.summary());
+    println!("{renderer}");
     app.probe.write_report(&[
         ("signals_at_start".to_owned(), format!("{:08x}", app.signals_at_start)),
         ("signals_at_end".to_owned(), format!("{signals_at_end:08x}")),
         ("run_result".to_owned(), format!("{result:?}")),
+        ("renderer_info".to_owned(), renderer),
         ("wakes_requested".to_owned(), format!("{} ({} after run returned)", wakes.load(Ordering::SeqCst), wakes.load(Ordering::SeqCst) - wakes_at_return)),
     ]);
     if let Err(e) = result {

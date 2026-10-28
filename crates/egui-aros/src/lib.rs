@@ -215,6 +215,18 @@ mod tests {
     use super::shell_safe_url;
 
     #[test]
+    fn software_renderers_are_recognised() {
+        use super::is_software_renderer as sw;
+        assert_eq!(sw("softpipe"), Some(true));
+        assert_eq!(sw("Gallium 0.4 on llvmpipe (LLVM 15.0, 256 bits)"), Some(true));
+        assert_eq!(sw("Mesa X11 swrast"), Some(true));
+        assert_eq!(sw("Software Rasterizer"), Some(true));
+        assert_eq!(sw("NV134 (nouveau)"), Some(false));
+        assert_eq!(sw("AMD Radeon RX 6600"), Some(false));
+        assert_eq!(sw("virgl"), None);
+    }
+
+    #[test]
     fn urls_cannot_leave_their_quotes() {
         assert_eq!(shell_safe_url("https://example.org/a?b=c#d"), "https://example.org/a?b=c#d");
         assert_eq!(shell_safe_url("x\" ; Delete SYS:"), "x%22%20;%20Delete%20SYS:");
@@ -222,12 +234,121 @@ mod tests {
     }
 }
 
-static RENDERER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// Which renderer a program asks for ([`Options::renderer`]). The `glow` feature only decides
+/// whether OpenGL is compiled in; this decides, at run time, whether it is used.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RendererRequest {
+    /// The CPU renderer. OpenGL is not touched (no glutin, gl.library or Mesa), even when the
+    /// `glow` feature is compiled in.
+    #[default]
+    Cpu,
+    /// OpenGL if a context can be made, else the CPU renderer; the reason is in
+    /// [`RendererInfo::reason`].
+    Auto,
+    /// OpenGL or nothing: without a context [`run`] returns [`Error::Renderer`] before any frame
+    /// is drawn. Never falls back to the CPU silently.
+    Gpu,
+}
 
-/// Which renderer draws the window: "CPU", or "OpenGL: vendor / renderer / version". Known once
-/// the window is open (before that, "CPU").
+/// The renderer that draws the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RendererKind {
+    Cpu,
+    OpenGl,
+}
+
+/// What [`run`] chose and why ([`renderer_info`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RendererInfo {
+    pub requested: RendererRequest,
+    pub actual: RendererKind,
+    /// Why OpenGL is not used when it was asked for (`Auto`), or why it failed (`Gpu`).
+    pub reason: Option<String>,
+    pub gl_vendor: Option<String>,
+    pub gl_renderer: Option<String>,
+    pub gl_version: Option<String>,
+    pub glsl_version: Option<String>,
+    /// `true` when GL_RENDERER names a software rasterizer (softpipe, llvmpipe, swrast,
+    /// "Software"), `false` for a known hardware driver, `None` when it cannot be told (or no GL).
+    pub software: Option<bool>,
+}
+
+impl RendererInfo {
+    fn cpu(requested: RendererRequest, reason: Option<String>) -> Self {
+        Self {
+            requested,
+            actual: RendererKind::Cpu,
+            reason,
+            gl_vendor: None,
+            gl_renderer: None,
+            gl_version: None,
+            glsl_version: None,
+            software: None,
+        }
+    }
+
+    /// One line for logs: the request, the renderer, the reason and the GL strings.
+    pub fn summary(&self) -> String {
+        let mut out = format!("renderer: requested {:?}, using {:?}", self.requested, self.actual);
+        if let Some(reason) = &self.reason {
+            out += &format!(", reason: {reason}");
+        }
+        if self.actual == RendererKind::OpenGl {
+            let s = |v: &Option<String>| v.clone().unwrap_or_else(|| "?".to_owned());
+            out += &format!(
+                ", GL_VENDOR {}, GL_RENDERER {}, GL_VERSION {}, GLSL {}, software {}",
+                s(&self.gl_vendor),
+                s(&self.gl_renderer),
+                s(&self.gl_version),
+                s(&self.glsl_version),
+                self.software.map_or("unknown", |b| if b { "yes" } else { "no" })
+            );
+        }
+        out
+    }
+}
+
+/// Whether a GL_RENDERER string names a software rasterizer (`Some(true)`), a known hardware
+/// driver (`Some(false)`), or neither (`None`).
+pub fn is_software_renderer(gl_renderer: &str) -> Option<bool> {
+    let r = gl_renderer.to_ascii_lowercase();
+    const SOFTWARE: [&str; 5] = ["softpipe", "llvmpipe", "lavapipe", "swrast", "software"];
+    const HARDWARE: [&str; 12] =
+        ["nouveau", "radeon", "amd", "intel", "nvidia", "geforce", "quadro", "mali", "adreno", "vc4", "v3d", "apple"];
+    if SOFTWARE.iter().any(|k| r.contains(k)) {
+        Some(true)
+    } else if HARDWARE.iter().any(|k| r.contains(k)) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+static RENDERER: Mutex<Option<RendererInfo>> = Mutex::new(None);
+
+fn set_renderer_info(info: RendererInfo) {
+    log::info!("{}", info.summary());
+    *RENDERER.lock().unwrap_or_else(PoisonError::into_inner) = Some(info);
+}
+
+/// The renderer [`run`] chose, once it has decided (`None` before that).
+pub fn renderer_info() -> Option<RendererInfo> {
+    RENDERER.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// Which renderer draws the window: "CPU", "CPU (reason)", or "OpenGL: vendor / renderer /
+/// version". Known once the window is open (before that, "CPU").
 pub fn renderer_name() -> String {
-    RENDERER.get().cloned().unwrap_or_else(|| "CPU".to_owned())
+    match renderer_info() {
+        Some(i) if i.actual == RendererKind::OpenGl => format!(
+            "OpenGL: {} / {} / {}",
+            i.gl_vendor.unwrap_or_default(),
+            i.gl_renderer.unwrap_or_default(),
+            i.gl_version.unwrap_or_default()
+        ),
+        Some(RendererInfo { reason: Some(reason), requested: RendererRequest::Auto, .. }) => format!("CPU ({reason})"),
+        _ => "CPU".to_owned(),
+    }
 }
 
 /// The task's allocated signals (`tc_SigAlloc`), for leak checks; 0 on other systems.
@@ -254,6 +375,8 @@ pub struct Options {
     pub measure_paint: bool,
     /// Appended to every window title, the first one and those egui sets (a build label).
     pub title_suffix: String,
+    /// CPU (the default), OpenGL if possible, or OpenGL only; see [`RendererRequest`].
+    pub renderer: RendererRequest,
 }
 
 impl Default for Options {
@@ -266,6 +389,7 @@ impl Default for Options {
             idle_poll: None,
             measure_paint: false,
             title_suffix: String::new(),
+            renderer: RendererRequest::Cpu,
         }
     }
 }
@@ -347,6 +471,8 @@ pub trait App {
 pub enum Error {
     EventLoop(winit::error::EventLoopError),
     Window(String),
+    /// [`RendererRequest::Gpu`] and no OpenGL context (or OpenGL not compiled in).
+    Renderer(String),
 }
 
 impl std::fmt::Display for Error {
@@ -354,6 +480,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::EventLoop(e) => write!(f, "event loop: {e}"),
             Error::Window(e) => write!(f, "window: {e}"),
+            Error::Renderer(e) => write!(f, "renderer: {e}"),
         }
     }
 }
@@ -501,25 +628,55 @@ impl Runner<'_> {
         if let Some((w, h)) = self.options.min_inner_size {
             attributes = attributes.with_min_inner_size(winit::dpi::PhysicalSize::new(w, h));
         }
+        let requested = self.options.renderer;
         #[cfg(feature = "glow")]
-        let (window, gl) = {
+        let (window, gl) = if requested == RendererRequest::Cpu {
+            let window = event_loop.create_window(attributes).map_err(|e| Error::Window(e.to_string()))?;
+            set_renderer_info(RendererInfo::cpu(requested, None));
+            (window, None)
+        } else {
             let (window, gl) = gl::open(event_loop, attributes);
-            let window = window.ok_or_else(|| Error::Window("Intuition could not open the window".into()))?;
             match gl {
                 Ok(gl) => {
-                    log::info!("renderer: OpenGL {}", gl.info);
-                    let _ = RENDERER.set(format!("OpenGL: {}", gl.info));
+                    let window = window.ok_or_else(|| Error::Window("Intuition could not open the window".into()))?;
+                    let software = gl.renderer.as_deref().and_then(is_software_renderer);
+                    set_renderer_info(RendererInfo {
+                        requested,
+                        actual: RendererKind::OpenGl,
+                        reason: None,
+                        gl_vendor: gl.vendor.clone(),
+                        gl_renderer: gl.renderer.clone(),
+                        gl_version: gl.version.clone(),
+                        glsl_version: gl.glsl_version.clone(),
+                        software,
+                    });
                     (window, Some(gl))
                 }
+                Err(e) if requested == RendererRequest::Gpu => {
+                    // The window (if glutin opened it) closes here, before any frame is drawn.
+                    drop(window);
+                    set_renderer_info(RendererInfo::cpu(requested, Some(e.clone())));
+                    return Err(Error::Renderer(e));
+                }
                 Err(e) => {
-                    log::warn!("OpenGL not available ({e}); drawing with the CPU");
-                    let _ = RENDERER.set(format!("CPU (OpenGL failed: {e})"));
+                    let window = window.ok_or_else(|| Error::Window("Intuition could not open the window".into()))?;
+                    set_renderer_info(RendererInfo::cpu(requested, Some(format!("OpenGL failed: {e}"))));
                     (window, None)
                 }
             }
         };
         #[cfg(not(feature = "glow"))]
-        let window = event_loop.create_window(attributes).map_err(|e| Error::Window(e.to_string()))?;
+        let window = {
+            const NO_GL: &str = "built without OpenGL (feature glow)";
+            if requested == RendererRequest::Gpu {
+                set_renderer_info(RendererInfo::cpu(requested, Some(NO_GL.to_owned())));
+                return Err(Error::Renderer(NO_GL.to_owned()));
+            }
+            let window = event_loop.create_window(attributes).map_err(|e| Error::Window(e.to_string()))?;
+            let reason = (requested == RendererRequest::Auto).then(|| NO_GL.to_owned());
+            set_renderer_info(RendererInfo::cpu(requested, reason));
+            window
+        };
         let window = Rc::new(window);
         let size = window.inner_size();
         let state = egui_winit::State::new(self.ctx.clone(), ViewportId::ROOT, event_loop, Some(1.0), None, Some(16384));
@@ -867,6 +1024,10 @@ pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<()
         let repaint = repaint.clone();
         ctx.set_request_repaint_callback(move |info| repaint.request(Instant::now() + info.delay));
     }
+    // One window: every egui viewport (deferred or immediate, such as floating panels a program
+    // shows as native windows elsewhere) is drawn inside it. egui's default is already `true`;
+    // set it anyway, since the context comes from the program.
+    ctx.set_embed_viewports(true);
     let now = Instant::now();
     let mut runner = Runner {
         options,

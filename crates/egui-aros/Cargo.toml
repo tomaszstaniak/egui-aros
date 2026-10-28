@@ -14,6 +14,9 @@ asl = []
 # renderer. A program built with it needs gl.library to start; without a usable context it
 # falls back to the CPU renderer.
 glow = ["dep:egui_glow", "dep:glow", "dep:glutin", "dep:glutin-winit"]
+# Test builds only: EGUI_AROS_TEST_GL_FAILURE makes the OpenGL context fail, to check
+# RendererRequest::Auto's fallback and Gpu's error where OpenGL works.
+gl-failure-test = ["glow"]
 
 [dependencies]
 egui = { version = "=0.37.0", default-features = false }
