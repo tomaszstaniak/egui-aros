@@ -1,5 +1,8 @@
 # Using egui-aros in a program
 
+This branch builds on egui 0.37.0 as the Craft programs use it (the storytold
+forks of egui and winit, pinned in `upstreams.json`).
+
 ```rust
 struct MyApp { /* ... */ }
 
@@ -29,13 +32,48 @@ fn main() {
   loop's own thread do not wake it; it reads them before it sleeps.
 - Draws every frame with a CPU renderer (textured triangles, premultiplied
   alpha, egui's anti-aliasing) and copies it into the window with
-  `WritePixelArray`. No OpenGL is used.
+  `WritePixelArray`, or with OpenGL (see "Renderer" below). Partial texture
+  updates (`ImageDelta` with a position) are applied in order.
+- Draws every egui viewport inside its one window: `run` sets
+  `Context::set_embed_viewports(true)` (egui's default, set again because the
+  context comes from the program), so a viewport a program would show as a
+  native window elsewhere appears as an egui window inside the main one.
 - Text clipboard: Ctrl or Amiga + C, X, V go through clipboard.device unit 0
   (IFF FTXT, ISO 8859-1). `egui_aros::clipboard_text()` reads it directly.
 - The busy pointer while egui's cursor is `CursorIcon::Wait`; `open_url` and
   egui's `OpenUrl` commands use the system's `OpenURL` command.
 - With the `asl` feature: `egui_aros::asl::request` shows ASL file, multi-file,
   save and drawer requesters and returns absolute paths.
+
+## Renderer
+
+`Options::renderer` chooses at run time; the `glow` feature only decides whether
+OpenGL is compiled in.
+
+| `RendererRequest` | With `glow` | Without `glow` |
+|---|---|---|
+| `Cpu` (default) | CPU renderer; glutin, gl.library and Mesa are not touched | CPU renderer |
+| `Auto` | OpenGL if a context can be made, else CPU with the reason | CPU, reason "built without OpenGL" |
+| `Gpu` | OpenGL, or `run` returns `Error::Renderer(reason)` before any frame is drawn | `Error::Renderer` |
+
+With `Gpu`, glutin may already have opened the window when the context fails; it
+is closed again without a frame. `renderer_info()` returns what was chosen once
+the window is open: the request, the renderer used (`RendererKind::Cpu` or
+`OpenGl`), the reason for a fallback or failure, GL_VENDOR, GL_RENDERER,
+GL_VERSION, the GLSL version, and `software`: `Some(true)` when GL_RENDERER
+names a software rasterizer (softpipe, llvmpipe, swrast, "Software"),
+`Some(false)` for a known hardware driver, `None` otherwise. The same is logged
+as one line (`RendererInfo::summary`). `renderer_name()` gives a short text.
+
+On AROS One 1.3 under QEMU the OpenGL renderer is Mesa softpipe, which draws on
+the CPU and is slower than egui-aros's own CPU renderer; use it for function
+checks, not for speed.
+
+## Fonts
+
+egui 0.37 builds its default fonts only with egui's `default_fonts` feature.
+egui-aros does not enable it: enable it in the program's own `egui` dependency,
+or install fonts with `Context::set_fonts`.
 
 ## What the program decides
 
@@ -70,4 +108,7 @@ being shown). `Options::measure_paint` adds the renderer's per-kind statistics.
   charset (the Polish `pc105_pl` produces ISO 8859-2), letters outside ASCII
   arrive as the wrong characters; text shown by the program is not affected.
 - No pictures on the clipboard, no files dropped on the window, no pointer
-  shapes other than the busy pointer, one window per program.
+  shapes other than the busy pointer, one window per program (other viewports
+  are drawn inside it).
+- No input method (winit's `reset_ime` does nothing on AROS) and no
+  accessibility (AccessKit) support.
