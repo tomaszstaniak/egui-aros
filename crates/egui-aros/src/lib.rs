@@ -215,6 +215,15 @@ mod tests {
     use super::shell_safe_url;
 
     #[test]
+    fn auto_closes_software_gl_and_gpu_keeps_it() {
+        use super::{RendererRequest as R, auto_keeps_gl as keeps};
+        assert!(!keeps(R::Auto, Some(true)));
+        assert!(keeps(R::Auto, Some(false)));
+        assert!(keeps(R::Auto, None));
+        assert!(keeps(R::Gpu, Some(true)));
+    }
+
+    #[test]
     fn software_renderers_are_recognised() {
         use super::is_software_renderer as sw;
         assert_eq!(sw("softpipe"), Some(true));
@@ -242,8 +251,9 @@ pub enum RendererRequest {
     /// `glow` feature is compiled in.
     #[default]
     Cpu,
-    /// OpenGL if a context can be made, else the CPU renderer; the reason is in
-    /// [`RendererInfo::reason`].
+    /// Hardware OpenGL if a context can be made, else the CPU renderer; the reason is in
+    /// [`RendererInfo::reason`]. A context on a software rasterizer (softpipe, llvmpipe) is closed
+    /// again: under AROS it draws egui several times slower than the CPU renderer.
     Auto,
     /// OpenGL or nothing: without a context [`run`] returns [`Error::Renderer`] before any frame
     /// is drawn. Never falls back to the CPU silently.
@@ -293,7 +303,7 @@ impl RendererInfo {
         if let Some(reason) = &self.reason {
             out += &format!(", reason: {reason}");
         }
-        if self.actual == RendererKind::OpenGl {
+        if self.gl_renderer.is_some() || self.actual == RendererKind::OpenGl {
             let s = |v: &Option<String>| v.clone().unwrap_or_else(|| "?".to_owned());
             out += &format!(
                 ", GL_VENDOR {}, GL_RENDERER {}, GL_VERSION {}, GLSL {}, software {}",
@@ -306,6 +316,13 @@ impl RendererInfo {
         }
         out
     }
+}
+
+/// Whether a context made for `requested` is used: always for `Gpu`, and for `Auto` unless it
+/// is known to be a software rasterizer (an unknown driver may be hardware, so it is kept).
+#[cfg_attr(not(feature = "glow"), allow(dead_code))]
+fn auto_keeps_gl(requested: RendererRequest, software: Option<bool>) -> bool {
+    requested == RendererRequest::Gpu || software != Some(true)
 }
 
 /// Whether a GL_RENDERER string names a software rasterizer (`Some(true)`), a known hardware
@@ -640,17 +657,25 @@ impl Runner<'_> {
                 Ok(gl) => {
                     let window = window.ok_or_else(|| Error::Window("Intuition could not open the window".into()))?;
                     let software = gl.renderer.as_deref().and_then(is_software_renderer);
+                    let keep = auto_keeps_gl(requested, software);
                     set_renderer_info(RendererInfo {
                         requested,
-                        actual: RendererKind::OpenGl,
-                        reason: None,
+                        actual: if keep { RendererKind::OpenGl } else { RendererKind::Cpu },
+                        reason: (!keep).then(|| "OpenGL is a software rasterizer, slower than the CPU renderer".to_owned()),
                         gl_vendor: gl.vendor.clone(),
                         gl_renderer: gl.renderer.clone(),
                         gl_version: gl.version.clone(),
                         glsl_version: gl.glsl_version.clone(),
                         software,
                     });
-                    (window, Some(gl))
+                    if keep {
+                        (window, Some(gl))
+                    } else {
+                        // The window stays; the context goes, and Mesa with it, before any frame.
+                        drop(gl);
+                        gl::close_library();
+                        (window, None)
+                    }
                 }
                 Err(e) if requested == RendererRequest::Gpu => {
                     // The window (if glutin opened it) closes here, before any frame is drawn.

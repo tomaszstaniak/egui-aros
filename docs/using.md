@@ -53,7 +53,7 @@ OpenGL is compiled in.
 | `RendererRequest` | With `glow` | Without `glow` |
 |---|---|---|
 | `Cpu` (default) | CPU renderer; glutin, gl.library and Mesa are not touched | CPU renderer |
-| `Auto` | OpenGL if a context can be made, else CPU with the reason | CPU, reason "built without OpenGL" |
+| `Auto` | Hardware OpenGL if a context can be made; CPU with the reason when there is none or it is a software rasterizer (softpipe, llvmpipe) | CPU, reason "built without OpenGL" |
 | `Gpu` | OpenGL, or `run` returns `Error::Renderer(reason)` before any frame is drawn | `Error::Renderer` |
 
 With `Gpu`, glutin may already have opened the window when the context fails; it
