@@ -1,0 +1,107 @@
+From: egui-aros
+Subject: [PATCH] aros-gui-sys: open gl.library on request, not at program start
+
+Repository: aros-development-team/AROS bf7075aab8480cf36bdc13b4382ccbd6098c8a0d,
+  tools/crosstools/rust/crates/aros-gui-sys.
+Date: 2026-10-28
+Problem: gl.c pulled in libGL's autoinit, so every program linking the GL
+  glue opened gl.library (and with it Mesa) at start, even when it then drew
+  with the CPU. Mesa starts a helper process on the first open; it inherits a
+  copy of the opener's home directory and keeps it while gl.library stays
+  loaded, so the program's drawer stayed "in use" after the program had
+  ended (VectorCraft on ABIv11 2026.09, pool v11-3: a "New Process" with the
+  program drawer as home dir remained; the drawer could not be deleted until
+  a reboot; the CLI, which does not link the GL glue, left nothing).
+Rationale: GLBase is defined here, so the linker leaves libGL's autoinit
+  object (gl_autoinit.o, the only definition of GLBase in libGL.a) out.
+  aros_gui_gl_open() opens gl.library version 20 (the stubs' libreq) with the
+  caller's home and current directory cleared for the call, and
+  aros_gui_gl_close() closes it. A program that never asks for OpenGL never
+  opens gl.library.
+Scope: two functions and the GLBase definition; callers must call
+  aros_gui_gl_open() before creating a context (egui-aros does, in its GL path).
+Upstream-status: candidate for mainline's crate store (same change applies);
+  not submitted.
+---
+diff --color -ruN aros-gui-sys-0.1.0.orig/src/gl.c aros-gui-sys-0.1.0/src/gl.c
+--- aros-gui-sys-0.1.0.orig/src/gl.c	2026-10-28 20:21:02
++++ aros-gui-sys-0.1.0/src/gl.c	2026-10-28 20:21:02
+@@ -1,8 +1,11 @@
+ /* gl.library's GLA context for Rust on AROS. Contract: glue.h.
+ 
+-   A separate object from glue.c, so only programs that use GL pull in
+-   libGL's autoinit, which opens gl.library at startup. */
++   gl.library is opened by aros_gui_gl_open(), when a program decides to use
++   OpenGL, not by libGL's autoinit at program start: GLBase is defined here,
++   so the linker leaves libGL's autoinit object out. */
+ #include <stdint.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
+ #include <intuition/intuition.h>
+ #include <utility/tagitem.h>
+ #include <GL/gla.h>
+@@ -17,6 +20,35 @@
+ #define GLA_PROFILE_COMPAT      0
+ #define GLA_PROFILE_CORE        1
+ #endif
++
++struct Library *GLBase = NULL;
++
++/* gl.library starts helper processes (Mesa's threads) on its first open and
++   keeps them while it stays loaded. A process inherits a copy of the opener's
++   home and current directory, which would keep the program's drawer "in use"
++   after the program has ended; the opener's are cleared for the open. */
++int aros_gui_gl_open(void)
++{
++    BPTR home, current;
++
++    if (GLBase)
++        return 1;
++    home = SetProgramDir(BNULL);
++    current = CurrentDir(BNULL);
++    GLBase = OpenLibrary("gl.library", 20);
++    CurrentDir(current);
++    SetProgramDir(home);
++    return GLBase != NULL;
++}
++
++void aros_gui_gl_close(void)
++{
++    if (GLBase)
++    {
++        CloseLibrary(GLBase);
++        GLBase = NULL;
++    }
++}
+ 
+ /* The window interior, which is what the context renders into. */
+ static void set_rast_tags(struct TagItem *tags, struct Window *window)
+diff --color -ruN aros-gui-sys-0.1.0.orig/src/glue.h aros-gui-sys-0.1.0/src/glue.h
+--- aros-gui-sys-0.1.0.orig/src/glue.h	2026-10-28 20:21:02
++++ aros-gui-sys-0.1.0/src/glue.h	2026-10-28 20:21:02
+@@ -91,6 +91,10 @@
+ /* --- OpenGL through gl.library's GLA context (gl.c) --- */
+ 
+ /* A context bound to the window's interior. Returns 0 on failure. */
++/* Opens gl.library (returns 0 if it cannot be opened); every other aros_gui_gl_ call needs it
++   open. Close it after the last context has been destroyed. */
++int aros_gui_gl_open(void);
++void aros_gui_gl_close(void);
+ uintptr_t aros_gui_gl_create(uintptr_t window, int alpha, int depth, int stencil);
+ /* The same with a profile (core != 0: core profile) and the lowest GL version
+    the context must offer (major 0: no minimum). Needs a gl.library with the
+diff --color -ruN aros-gui-sys-0.1.0.orig/src/lib.rs aros-gui-sys-0.1.0/src/lib.rs
+--- aros-gui-sys-0.1.0.orig/src/lib.rs	2026-10-28 20:21:02
++++ aros-gui-sys-0.1.0/src/lib.rs	2026-10-28 20:21:02
+@@ -134,6 +134,11 @@
+     ) -> c_int;
+     pub fn aros_gui_string_free(text: *mut c_char);
+ 
++    /// Opens gl.library (0: it could not be opened). Needed before any other `aros_gui_gl_`
++    /// call; libGL's autoinit is not linked, so nothing opens it at program start.
++    pub fn aros_gui_gl_open() -> c_int;
++    /// Closes gl.library after the last context has been destroyed.
++    pub fn aros_gui_gl_close();
+     pub fn aros_gui_gl_create(window: usize, alpha: c_int, depth: c_int, stencil: c_int) -> usize;
+     pub fn aros_gui_gl_create_profile(
+         window: usize,

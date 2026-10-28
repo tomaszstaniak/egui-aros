@@ -22,9 +22,40 @@ pub struct Gl {
     pub glsl_version: Option<String>,
 }
 
+/// gl.library is opened here, only when a program asks for OpenGL, and closed by [`close_library`]
+/// after the window and its context are gone (aros-gui-sys patch 0002: libGL's autoinit, which
+/// opened it at every program start, is not linked).
+static LIBRARY_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn open_library() -> Result<(), String> {
+    #[cfg(target_os = "aros")]
+    {
+        // SAFETY: called on the loop's task before any GL call; idempotent.
+        if unsafe { aros_gui_sys::aros_gui_gl_open() } == 0 {
+            return Err("gl.library (version 20 or later) could not be opened".into());
+        }
+        LIBRARY_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Close gl.library if [`open`] opened it. Only after every context has been destroyed.
+pub fn close_library() {
+    if LIBRARY_OPEN.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        #[cfg(target_os = "aros")]
+        // SAFETY: the window, surface and context were dropped before `run` returns.
+        unsafe {
+            aros_gui_sys::aros_gui_gl_close()
+        };
+    }
+}
+
 /// Opens the window through glutin-winit and makes a GL context current on it. On failure the
 /// window is still returned when it was opened, so the program can draw with the CPU instead.
 pub fn open(event_loop: &ActiveEventLoop, attributes: WindowAttributes) -> (Option<Window>, Result<Gl, String>) {
+    if let Err(e) = open_library() {
+        return (event_loop.create_window(attributes).ok(), Err(e));
+    }
     let built = glutin_winit::DisplayBuilder::new()
         .with_window_attributes(Some(attributes.clone()))
         .build(event_loop, ConfigTemplateBuilder::new(), |mut configs| configs.next().expect("GLA offers one config"));

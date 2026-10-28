@@ -1051,6 +1051,9 @@ pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<()
     ctx.set_request_repaint_callback(|_| {});
     let error = runner.error.take();
     drop(runner);
+    // The GL context and window went with the runner.
+    #[cfg(feature = "glow")]
+    gl::close_library();
     result?;
     error.map_or(Ok(()), Err)
 }
