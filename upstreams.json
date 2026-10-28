@@ -3,23 +3,63 @@
     "aros": {
       "url": "https://github.com/aros-development-team/AROS.git",
       "commit": "bf7075aab8480cf36bdc13b4382ccbd6098c8a0d",
-      "paths": ["tools/crosstools/rust/crates/aros-gui-sys"],
+      "paths": [
+        "tools/crosstools/rust/crates/aros-gui-sys"
+      ],
       "license": "Apache-2.0 OR MIT (aros-gui-sys)",
       "role": "Intuition/input/signal/clipboard/ASL/GLA C glue used by the contrib winit and glutin backends"
     },
     "contrib": {
       "url": "https://github.com/aros-development-team/contrib.git",
       "commit": "6bbefa406c281909294c4c4e8743f7f892caa1cf",
-      "paths": ["development/rust/crates"],
+      "paths": [
+        "development/rust/crates"
+      ],
       "license": "the patched crates' own licenses",
       "role": "AROS diffs for winit 0.30.13, glutin 0.32.3 and raw-window-handle 0.6.2, applied to the crates.io archives"
     },
     "ports": {
       "url": "https://github.com/aros-development-team/ports.git",
       "commit": "685982ed770f3c687d2b5d828a7069c11d450c6c",
-      "paths": ["graphics/photocraft/photocraft-aros"],
+      "paths": [
+        "graphics/photocraft/photocraft-aros"
+      ],
       "license": "MIT OR Apache-2.0",
       "role": "origin of the Intuition/CPU egui shell carried by the PhotoCraft, WordCraft and PdfCraft ports"
+    },
+    "egui": {
+      "url": "https://github.com/storytold/egui.git",
+      "commit": "6d518fc799681571963842f95b55a6b68431b15a",
+      "paths": [
+        "Cargo.toml",
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "crates/ecolor",
+        "crates/emath",
+        "crates/epaint",
+        "crates/epaint_default_fonts",
+        "crates/egui",
+        "crates/egui-winit",
+        "crates/egui_glow",
+        "crates/eframe",
+        "crates/egui_extras",
+        "crates/egui_system_font_provider",
+        "crates/egui_inspection",
+        "crates/egui_demo_lib",
+        "crates/egui-wgpu",
+        "crates/egui_kittest"
+      ],
+      "license": "MIT OR Apache-2.0",
+      "role": "egui 0.37.0 as the Craft programs use it (the storytold fork of emilk/egui); the crates are made standalone from the workspace and patched"
+    },
+    "winit": {
+      "url": "https://github.com/storytold/winit.git",
+      "commit": "a517b3846ee8457d84ee4975110bfda6797c44dc",
+      "paths": [
+        "."
+      ],
+      "license": "Apache-2.0",
+      "role": "winit 0.30.13 with the Craft programs' changes (storytold fork, v0.30.13 plus 37 commits); the contrib AROS backend is rebased onto it"
     }
   }
 }

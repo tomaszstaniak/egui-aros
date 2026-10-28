@@ -1,8 +1,8 @@
 From: egui-aros
 Subject: [PATCH] winit (AROS): window titles in the system charset
 
-Crate: winit 0.30.13 with contrib winit-0.30.13-aros.diff
-  (aros-development-team/contrib 6bbefa406c281909294c4c4e8743f7f892caa1cf).
+Crate: winit 0.30.13 (storytold fork a517b384) with 0001-aros-backend.patch
+  Rebased unchanged from the winit-0.30.13 series (2026-10-19) on 2026-10-28.
 Date: 2026-10-19
 Problem: the AROS backend passes the title's UTF-8 bytes to Intuition, which
   draws them in the system charset: "hello • — WordCraft" showed as

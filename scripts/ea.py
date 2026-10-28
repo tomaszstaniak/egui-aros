@@ -60,8 +60,14 @@ def run(cmd, cwd=None, env=None, capture=True, check=True, input=None):
     return result
 
 
+# Upstreams that keep test images in Git LFS (egui) must be readable without git-lfs: the
+# pointer files are kept as they are; nothing built uses them.
+NO_LFS = ["-c", "filter.lfs.process=", "-c", "filter.lfs.clean=cat", "-c", "filter.lfs.smudge=cat",
+          "-c", "filter.lfs.required=false"]
+
+
 def git(repo, *args, **kw):
-    return run(["git", "-C", repo, *args], **kw).stdout.decode().strip()
+    return run(["git", *NO_LFS, "-C", repo, *args], **kw).stdout.decode().strip()
 
 
 def sha256_file(path):
@@ -113,9 +119,12 @@ def cmd_fetch(args):
         path = upstream_dir(rid)
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
-            run(["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout", spec["url"], path], capture=False)
-            run(["git", "-C", path, "sparse-checkout", "set", "--no-cone", *[f"/{p}/" for p in spec["paths"]]])
-            run(["git", "-C", path, "checkout", "--quiet", spec["commit"]])
+            run(["git", *NO_LFS, "clone", "--quiet", "--filter=blob:none", "--no-checkout", spec["url"], path], capture=False)
+            # "." is the whole tree; a name with a suffix (Cargo.toml) is a file, others directories.
+            if "." not in spec["paths"]:
+                git(path, "sparse-checkout", "set", "--no-cone",
+                    *[f"/{p}" if Path(p).suffix else f"/{p}/" for p in spec["paths"]])
+            git(path, "checkout", "--quiet", spec["commit"])
         check_upstream(rid, spec)
         print(f"upstream/{rid}: {spec['commit']} clean ({', '.join(spec['paths'])})")
 
@@ -124,18 +133,135 @@ def crate_specs():
     return json.loads((CRATES_DIR / "crates.json").read_text())["crates"]
 
 
-def series_patches(name):
+def series_dir(spec):
+    """patches/crates/<dir>: `series` when a spec names it (two sources of one name and version,
+    such as a crates.io release and a Git fork of it), else <name>-<version>."""
+    return CRATES_DIR / spec.get("series", f"{spec['name']}-{spec['version']}")
+
+
+def series_patches(spec):
     """The patch files of a crate's series: `<id>:<path>` names a file of a pinned upstream
     (applied unchanged), anything else a file beside the series."""
     out = []
-    series = CRATES_DIR / name / "series"
+    series = series_dir(spec) / "series"
     for entry in series.read_text().split() if series.exists() else []:
         rid, sep, rel = entry.partition(":")
         if sep:
             out.append(check_upstream(rid, upstreams()[rid]) / rel)
         else:
-            out.append(CRATES_DIR / name / entry)
+            out.append(series.parent / entry)
     return out
+
+
+TOML_DEP_SECTIONS = ("dependencies", "build-dependencies")
+TOML_BARE = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+
+
+def toml_key(key):
+    return key if key and set(key) <= TOML_BARE else json.dumps(key)
+
+
+def toml_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{toml_key(k)} = {toml_value(v)}" for k, v in value.items()) + " }"
+    raise Failure(f"cannot write {value!r} as TOML")
+
+
+def toml_dump(doc):
+    """The manifest subset normalize_manifest produces: top-level tables, `target.<cfg>.<deps>`
+    and `lints.<tool>` tables, everything below them inline."""
+    out = []
+
+    def table(path, body):
+        out.append("[" + ".".join(toml_key(k) for k in path) + "]")
+        out.extend(f"{toml_key(k)} = {toml_value(v)}" for k, v in body.items())
+        out.append("")
+
+    for key, value in doc.items():
+        if key == "target":
+            for cfg, sections in value.items():
+                for section, deps in sections.items():
+                    table(["target", cfg, section], deps)
+        elif key == "lints":
+            for tool, lints in value.items():
+                table(["lints", tool], lints)
+        elif isinstance(value, dict):
+            table([key], value)
+        else:
+            raise Failure(f"unexpected top-level manifest value {key}")
+    return "\n".join(out)
+
+
+def normalize_manifest(manifest, workspace):
+    """A crate manifest of a Git workspace made standalone, as `cargo package` does: inherited
+    package fields, lints and dependencies are filled in from the workspace root, and path
+    dependencies lose their path (they resolve to the registry name, which the [patch] entries
+    of the build point at the prepared copies). Dev-dependencies and example, test and bench
+    targets are dropped: only the library is built from these copies."""
+    ws = workspace.get("workspace", {})
+    ws_package, ws_deps = ws.get("package", {}), ws.get("dependencies", {})
+    name = manifest["package"]["name"]
+
+    def dep(key, spec):
+        if isinstance(spec, str):
+            return {"version": spec}
+        spec = dict(spec)
+        if spec.pop("workspace", False):
+            base = ws_deps.get(key)
+            if base is None:
+                raise Failure(f"{name}: {key} inherits from a workspace that does not define it")
+            base = {"version": base} if isinstance(base, str) else dict(base)
+            features = base.get("features", []) + [f for f in spec.pop("features", []) if f not in base.get("features", [])]
+            base.update(spec)
+            if features:
+                base["features"] = features
+            spec = base
+        if "path" in spec:
+            if "version" not in spec:
+                raise Failure(f"{name}: path dependency {key} has no version")
+            del spec["path"]
+        return spec
+
+    def deps(table):
+        return {k: dep(k, v) for k, v in table.items()}
+
+    package = {}
+    for key, value in manifest["package"].items():
+        if key in ("metadata", "include", "exclude", "workspace"):
+            continue
+        if isinstance(value, dict) and value.get("workspace"):
+            if key not in ws_package:
+                raise Failure(f"{name}: package.{key} inherits from a workspace that does not define it")
+            value = ws_package[key]
+        package[key] = value
+    package.update({"autoexamples": False, "autotests": False, "autobenches": False})
+    out = {"package": package}
+    if "lib" in manifest:
+        out["lib"] = manifest["lib"]
+    if "features" in manifest:
+        out["features"] = manifest["features"]
+    for section in TOML_DEP_SECTIONS:
+        if section in manifest:
+            out[section] = deps(manifest[section])
+    targets = {}
+    for cfg, sections in manifest.get("target", {}).items():
+        kept = {s: deps(sections[s]) for s in TOML_DEP_SECTIONS if s in sections}
+        if kept:
+            targets[cfg] = kept
+    if targets:
+        out["target"] = targets
+    lints = manifest.get("lints")
+    if lints:
+        out["lints"] = ws.get("lints", {}) if lints.get("workspace") else lints
+    return "# Normalized by egui-aros scripts/ea.py from the Git workspace (see crates.json).\n" + toml_dump(out)
 
 
 def crate_source(spec, cfg):
@@ -144,8 +270,11 @@ def crate_source(spec, cfg):
     if "upstream" in spec:
         rid, rel = spec["upstream"].split(":", 1)
         base = check_upstream(rid, upstreams()[rid])
-        data = run(["git", "-C", base, "archive", "--format=tar", "HEAD", rel]).stdout
-        return data, rel, {"upstream": rid, "commit": upstreams()[rid]["commit"], "path": rel}
+        data = run(["git", *NO_LFS, "-C", base, "archive", "--format=tar", "--prefix=src/", "HEAD", rel]).stdout
+        origin = {"upstream": rid, "commit": upstreams()[rid]["commit"], "path": rel}
+        if "workspace" in spec:
+            origin["normalized_with"] = spec["workspace"]
+        return data, (Path("src") / rel).as_posix(), origin
     archives = list(Path(cfg["cargo_home"]).glob(f"registry/cache/*/{name}.crate"))
     if len(archives) != 1:
         raise Failure(f"{name}.crate is not in {cfg['cargo_home']}; run `ea.py build --online` once to fetch dependencies")
@@ -161,21 +290,31 @@ def cmd_crates(args, quiet=False, lock=None, dest_root=None):
     locked = {(p["name"], p["version"]) for p in tomllib.loads(Path(lock or REPO / "Cargo.lock").read_text())["package"]}
     for spec in crate_specs():
         name = f"{spec['name']}-{spec['version']}"
-        # A registry crate the lock does not use needs no copy (cargo would only warn about it).
-        if "upstream" not in spec and (spec["name"], spec["version"]) not in locked:
+        # A registry crate the lock does not use needs no copy (cargo would only warn about it);
+        # `if_locked` marks upstream crates that only some consumers use.
+        if ("upstream" not in spec or spec.get("if_locked")) and (spec["name"], spec["version"]) not in locked:
             if not quiet:
                 print(f"{name}: not in Cargo.lock, skipped")
             continue
-        patches = series_patches(name)
-        key = hashlib.sha256(b"".join(bytes.fromhex(sha256_file(p)) for p in patches)).hexdigest()[:8]
-        dest = Path(dest_root or Path(cfg["build_root"]) / "crates") / f"{name}-{key}"
+        patches = series_patches(spec)
         data, inner, origin = crate_source(spec, cfg)
+        # The source and the patches name the copy: a crates.io release and a Git fork of the same
+        # version get different directories.
+        key = hashlib.sha256(json.dumps(origin, sort_keys=True).encode() +
+                             b"".join(bytes.fromhex(sha256_file(p)) for p in patches)).hexdigest()[:8]
+        dest = Path(dest_root or Path(cfg["build_root"]) / "crates") / f"{name}-{key}"
         if not dest.exists():
             dest.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(prefix="crate-", dir=dest.parent) as tmp:
                 with tarfile.open(fileobj=io.BytesIO(data)) as tar:
                     tar.extractall(tmp, filter="data")
                 staged = Path(tmp) / inner
+                if "workspace" in spec:
+                    rid = spec["upstream"].split(":", 1)[0]
+                    import tomllib
+                    root = tomllib.loads((upstream_dir(rid) / spec["workspace"]).read_text())
+                    toml_path = staged / "Cargo.toml"
+                    toml_path.write_text(normalize_manifest(tomllib.loads(toml_path.read_text()), root))
                 for patch in patches:
                     run(["patch", "--quiet", "-p1", "-i", patch], cwd=staged)
                 staged.rename(dest)

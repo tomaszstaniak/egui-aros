@@ -619,7 +619,7 @@ impl Runner<'_> {
                 }
             }
             let mut actions = Vec::new();
-            egui_winit::process_viewport_commands(&self.ctx, &mut r.info, commands, &r.window, &mut actions);
+            egui_winit::process_viewport_commands(&self.ctx, &mut r.info, commands, &r.window, &mut r.state, &mut actions);
             if vo.repaint_delay < Duration::from_secs(3600) {
                 next_repaint = Some(vo.repaint_delay);
                 self.repaint.request(Instant::now() + vo.repaint_delay);
@@ -667,6 +667,7 @@ impl Runner<'_> {
             r.renderer.clear(self.options.clear_color);
             r.renderer.paint(&primitives, out.pixels_per_point);
             r.renderer.free_textures(&textures_delta);
+            textures_delta.clear();
             rasterized = Instant::now();
             present(&r.window, &r.renderer);
         }

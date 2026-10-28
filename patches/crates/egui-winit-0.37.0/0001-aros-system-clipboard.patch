@@ -1,9 +1,9 @@
 From: egui-aros
 Subject: [PATCH] egui-winit: use the AROS clipboard instead of arboard
 
-Crate: egui-winit 0.36.2 (crates.io, checksum
-  98466000559d66ba4db786a30448b01483946add4188e7f10f522a27b4fb89cc).
-Date: 2026-10-19
+Crate: egui-winit 0.37.0 from storytold/egui 6d518fc799681571963842f95b55a6b68431b15a,
+  manifest made standalone by scripts/ea.py.
+Date: 2026-10-28 (rebased from the egui-winit 0.36.2 series of 2026-10-19)
 Problem: the `clipboard` feature, which eframe always enables, builds
   arboard on every target but Android. On AROS arboard takes its X11 path
   (x11rb, rustix), which does not compile for x86_64-aros, and there is no
@@ -18,29 +18,34 @@ Upstream-status: candidate for the AROS contrib crate store (not submitted).
 Prerequisites: aros-gui-sys (AROS bf7075aa).
 Limitations: characters outside ISO-8859-1 are written as `?`; FTXT read
   from programs that store another 8-bit charset is read as ISO-8859-1.
-Verification: see the egui-aros build records.
+Verification: see the egui-aros build records (branch egui-0.37).
+Rebase: the 0.37 clipboard also has winit's Wayland clipboard and the
+  PRIMARY selection (both Linux-only); every arboard gate that excluded
+  Android and iOS now excludes AROS too.
 Removal: when the AROS crate store carries an equivalent change.
 ---
-diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/Cargo.toml egui-winit-0.36.2/Cargo.toml
---- egui-winit-0.36.2.orig/Cargo.toml	2026-10-19 11:07:05
-+++ egui-winit-0.36.2/Cargo.toml	2026-10-19 11:07:32
-@@ -141,7 +141,10 @@
- optional = true
- default-features = false
+diff --git a/Cargo.toml b/Cargo.toml
+index c51967f..cdac815 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -61,7 +61,10 @@ smithay-clipboard = { version = "0.7.2", optional = true }
+ parking_lot = { version = "0.12.5", optional = true }
+ wayland-cursor = { version = "0.31.14", default-features = false, optional = true }
  
--[target.'cfg(not(target_os = "android"))'.dependencies.arboard]
-+[target.'cfg(target_os = "aros")'.dependencies.aros-gui-sys]
-+version = "0.1"
+-[target."cfg(not(target_os = \"android\"))".dependencies]
++[target."cfg(target_os = \"aros\")".dependencies]
++aros-gui-sys = { version = "0.1" }
 +
-+[target.'cfg(not(any(target_os = "android", target_os = "aros")))'.dependencies.arboard]
- version = "3.6"
- features = ["image-data"]
- optional = true
-diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/src/clipboard.rs egui-winit-0.36.2/src/clipboard.rs
---- egui-winit-0.36.2.orig/src/clipboard.rs	2026-10-19 11:07:05
-+++ egui-winit-0.36.2/src/clipboard.rs	2026-10-19 11:09:21
-@@ -6,7 +6,7 @@
- /// then a fallback clipboard that just works within the same app is used instead.
++[target."cfg(not(any(target_os = \"android\", target_os = \"aros\")))".dependencies]
+ arboard = { version = "3.6", default-features = false, optional = true, features = ["image-data"] }
+ 
+ [lints.rust]
+diff --git a/src/clipboard.rs b/src/clipboard.rs
+index 3423e70..2f9e69f 100644
+--- a/src/clipboard.rs
++++ b/src/clipboard.rs
+@@ -40,7 +40,7 @@ use crate::clipboard_bridge::{
+ /// `begin_load_*` handles instead so a slow peer cannot block the event loop.
  pub struct Clipboard {
      #[cfg(all(
 -        not(any(target_os = "android", target_os = "ios")),
@@ -48,8 +53,17 @@ diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/sr
          feature = "arboard",
      ))]
      arboard: Option<arboard::Clipboard>,
-@@ -32,7 +32,7 @@
-     pub fn new(_raw_display_handle: Option<RawDisplayHandle>) -> Self {
+@@ -130,7 +130,7 @@ impl Clipboard {
+             let winit_wayland = init_winit_wayland_clipboard(_raw_display_handle);
+             return Self {
+                 #[cfg(all(
+-                    not(any(target_os = "android", target_os = "ios")),
++                    not(any(target_os = "android", target_os = "ios", target_os = "aros")),
+                     feature = "arboard",
+                 ))]
+                 arboard: None,
+@@ -144,7 +144,7 @@ impl Clipboard {
+ 
          Self {
              #[cfg(all(
 -                not(any(target_os = "android", target_os = "ios")),
@@ -57,9 +71,9 @@ diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/sr
                  feature = "arboard",
              ))]
              arboard: init_arboard(),
-@@ -54,6 +54,11 @@
-     }
- 
+@@ -244,6 +244,11 @@ impl Clipboard {
+         expect(clippy::needless_pass_by_ref_mut, clippy::unnecessary_wraps)
+     )]
      pub fn get(&mut self) -> Option<String> {
 +        #[cfg(target_os = "aros")]
 +        if let Some(text) = aros::get() {
@@ -69,7 +83,7 @@ diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/sr
          #[cfg(all(
              any(
                  target_os = "linux",
-@@ -74,7 +79,7 @@
+@@ -294,7 +299,7 @@ impl Clipboard {
          }
  
          #[cfg(all(
@@ -78,9 +92,9 @@ diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/sr
              feature = "arboard",
          ))]
          if let Some(clipboard) = &mut self.arboard {
-@@ -91,6 +96,11 @@
-     }
- 
+@@ -321,6 +326,11 @@ impl Clipboard {
+     /// This does not have an input-origin token. The egui event path claims ownership with
+     /// winit's `claim_text` on the triggering input serial instead.
      pub fn set_text(&mut self, text: String) {
 +        #[cfg(target_os = "aros")]
 +        if aros::set(&text) {
@@ -90,7 +104,7 @@ diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/sr
          #[cfg(all(
              any(
                  target_os = "linux",
-@@ -107,7 +117,7 @@
+@@ -359,7 +369,7 @@ impl Clipboard {
          }
  
          #[cfg(all(
@@ -99,16 +113,52 @@ diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/sr
              feature = "arboard",
          ))]
          if let Some(clipboard) = &mut self.arboard {
-@@ -122,7 +132,7 @@
+@@ -407,7 +417,7 @@ impl Clipboard {
+         }
  
-     pub fn set_image(&mut self, image: &egui::ColorImage) {
          #[cfg(all(
 -            not(any(target_os = "android", target_os = "ios")),
 +            not(any(target_os = "android", target_os = "ios", target_os = "aros")),
              feature = "arboard",
          ))]
          if let Some(clipboard) = &mut self.arboard {
-@@ -145,7 +155,7 @@
+@@ -453,7 +463,7 @@ impl Clipboard {
+         }
+ 
+         #[cfg(all(
+-            not(any(target_os = "android", target_os = "ios")),
++            not(any(target_os = "android", target_os = "ios", target_os = "aros")),
+             feature = "arboard",
+         ))]
+         if let Some(clipboard) = &mut self.arboard {
+@@ -602,7 +612,7 @@ cfg_select! {
+ /// Pulled out as its own pure function (rather than inlined in the two `match`es above) so it
+ /// can be unit-tested without touching the real OS clipboard, which CI can't rely on.
+ #[cfg(all(
+-    not(any(target_os = "android", target_os = "ios")),
++    not(any(target_os = "android", target_os = "ios", target_os = "aros")),
+     feature = "arboard",
+ ))]
+ fn is_expected_content_absence(err: &arboard::Error) -> bool {
+@@ -610,7 +620,7 @@ fn is_expected_content_absence(err: &arboard::Error) -> bool {
+ }
+ 
+ #[cfg(all(
+-    not(any(target_os = "android", target_os = "ios")),
++    not(any(target_os = "android", target_os = "ios", target_os = "aros")),
+     feature = "arboard",
+ ))]
+ fn color_image_from_arboard(image: &arboard::ImageData<'_>) -> egui::ColorImage {
+@@ -619,7 +629,7 @@ fn color_image_from_arboard(image: &arboard::ImageData<'_>) -> egui::ColorImage
+ 
+ /// arboard expects unmultiplied alpha, but [`egui::Color32`] is premultiplied.
+ #[cfg(all(
+-    not(any(target_os = "android", target_os = "ios")),
++    not(any(target_os = "android", target_os = "ios", target_os = "aros")),
+     feature = "arboard",
+ ))]
+ fn arboard_from_color_image(image: &egui::ColorImage) -> arboard::ImageData<'static> {
+@@ -998,7 +1008,7 @@ fn init_winit_wayland_clipboard(
  }
  
  #[cfg(all(
@@ -117,12 +167,19 @@ diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/sr
      feature = "arboard",
  ))]
  fn init_arboard() -> Option<arboard::Clipboard> {
-@@ -190,5 +200,36 @@
-             "Cannot init smithay clipboard: the 'wayland' feature of 'egui-winit' is not enabled"
+@@ -1050,7 +1060,7 @@ unsafe fn init_smithay_clipboard(
+ }
+ 
+ #[cfg(all(
+-    not(any(target_os = "android", target_os = "ios")),
++    not(any(target_os = "android", target_os = "ios", target_os = "aros")),
+     feature = "arboard",
+ ))]
+ #[cfg(test)]
+@@ -1121,3 +1131,34 @@ mod tests {
          );
-         None
-+    }
-+}
+     }
+ }
 +
 +/// The system clipboard (clipboard.device unit 0, IFF FTXT). FTXT text is
 +/// ISO-8859-1: characters outside it are written as `?`.
@@ -152,5 +209,5 @@ diff --color -ruN -x .cargo-ok -x .cargo_vcs_info.json egui-winit-0.36.2.orig/sr
 +            log::error!("AROS clipboard write failed");
 +        }
 +        ok
-     }
- }
++    }
++}

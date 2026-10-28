@@ -1,5 +1,5 @@
 {
-  "comment": "Crates built from a patched copy. Registry crates: checksum is the Cargo.lock checksum of the crates.io archive. `upstream` names a path in a pinned upstream instead. Series entries `<id>:<path>` are applied unchanged from that pinned upstream; other entries are files beside the series. tree_sha256: scripts/ea.py tree hash of the patched copy, recorded after review.",
+  "comment": "Crates built from a prepared copy. Registry crates: checksum is the Cargo.lock checksum of the crates.io archive. `upstream` names a path in a pinned upstream instead; with `workspace` (that upstream's root manifest) the crate's manifest is made standalone first (inherited fields filled in, path dependencies resolved through the [patch] entries). `series` names the patch directory when it is not <name>-<version>; `if_locked` crates are prepared only when the lock uses them (crates some consumers need so that every egui crate comes from one source). Series entries `<id>:<path>` are applied unchanged from that pinned upstream; other entries are files beside the series. tree_sha256: scripts/ea.py tree hash of the prepared copy, recorded after review.",
   "crates": [
     {
       "name": "parking_lot_core",
@@ -17,11 +17,6 @@
       "checksum": "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
     },
     {
-      "name": "winit",
-      "version": "0.30.13",
-      "checksum": "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
-    },
-    {
       "name": "glutin",
       "version": "0.32.3",
       "checksum": "12124de845cacfebedff80e877bb37b5b75c34c5a4c89e47e1cdd67fb6041325"
@@ -32,14 +27,113 @@
       "checksum": "85edca7075f8fc728f28cb8fbb111a96c3b89e930574369e3e9c27eb75d3788f"
     },
     {
-      "name": "eframe",
-      "version": "0.36.2",
-      "checksum": "55ad41fac6e3149abb4866e93df37dbd33baa95db525c3368c944584e95a5dc2"
+      "name": "winit",
+      "version": "0.30.13",
+      "upstream": "winit:.",
+      "workspace": "Cargo.toml",
+      "series": "winit-0.30.13-storytold",
+      "tree_sha256": "ce7e70f888196014f49282650419959dab236c023c8c1918013a1cb11caba9db"
+    },
+    {
+      "name": "ecolor",
+      "version": "0.37.0",
+      "upstream": "egui:crates/ecolor",
+      "workspace": "Cargo.toml",
+      "tree_sha256": "5b9e3cec37a3f1543ca89b11ecaaa02442481b0f05a45421ab7e1b7d7241eef7"
+    },
+    {
+      "name": "emath",
+      "version": "0.37.0",
+      "upstream": "egui:crates/emath",
+      "workspace": "Cargo.toml",
+      "tree_sha256": "c394f9b416103b4d6f0700c36d0ce0d5d464f259f2de3c420927e586c72538c7"
+    },
+    {
+      "name": "epaint",
+      "version": "0.37.0",
+      "upstream": "egui:crates/epaint",
+      "workspace": "Cargo.toml",
+      "tree_sha256": "92ea1089549ceffcf7d32e298ef2b07717efc1bae51dbebe51e4f6845bb8aaad"
+    },
+    {
+      "name": "epaint_default_fonts",
+      "version": "0.37.0",
+      "upstream": "egui:crates/epaint_default_fonts",
+      "workspace": "Cargo.toml",
+      "tree_sha256": "e381c5e2aa13d243f14a9bc2e5c37e3b69dcd504d8b8a85815458511e7312a0c"
+    },
+    {
+      "name": "egui",
+      "version": "0.37.0",
+      "upstream": "egui:crates/egui",
+      "workspace": "Cargo.toml",
+      "tree_sha256": "e70d20627a9ee15b6159b54e42fb1ed3b12ccba79377fb6e59fd76d48feae671"
     },
     {
       "name": "egui-winit",
-      "version": "0.36.2",
-      "checksum": "98466000559d66ba4db786a30448b01483946add4188e7f10f522a27b4fb89cc"
+      "version": "0.37.0",
+      "upstream": "egui:crates/egui-winit",
+      "workspace": "Cargo.toml",
+      "tree_sha256": "39cd16528edc7f200ee438a172f086518fc1089d4ed9b78678a0f51b9a2c0144"
+    },
+    {
+      "name": "egui_glow",
+      "version": "0.37.0",
+      "upstream": "egui:crates/egui_glow",
+      "workspace": "Cargo.toml",
+      "tree_sha256": "6688ef0e33f668316cb1fe0b94ea70a605f63b7e9c876df1a3ee33e6c04508df"
+    },
+    {
+      "name": "eframe",
+      "version": "0.37.0",
+      "upstream": "egui:crates/eframe",
+      "workspace": "Cargo.toml",
+      "tree_sha256": "15191ca09e32ee9426a8b82307f36db12b5fe9e82050d42831a588ec9f87ae42"
+    },
+    {
+      "name": "egui_extras",
+      "version": "0.37.0",
+      "upstream": "egui:crates/egui_extras",
+      "workspace": "Cargo.toml",
+      "if_locked": true,
+      "tree_sha256": "1ce2280120051ba7035107c3cd8c75d2ad738767617e7afe1c2240e4a40ea49f"
+    },
+    {
+      "name": "egui_system_font_provider",
+      "version": "0.37.0",
+      "upstream": "egui:crates/egui_system_font_provider",
+      "workspace": "Cargo.toml",
+      "if_locked": true
+    },
+    {
+      "name": "egui_inspection",
+      "version": "0.37.0",
+      "upstream": "egui:crates/egui_inspection",
+      "workspace": "Cargo.toml",
+      "if_locked": true
+    },
+    {
+      "name": "egui_demo_lib",
+      "version": "0.37.0",
+      "upstream": "egui:crates/egui_demo_lib",
+      "workspace": "Cargo.toml",
+      "if_locked": true
+    },
+    {
+      "name": "egui-wgpu",
+      "version": "0.37.0",
+      "upstream": "egui:crates/egui-wgpu",
+      "workspace": "Cargo.toml",
+      "if_locked": true,
+      "tree_sha256": "b6f05b62dd57687e358e41a41691b6c0392045f3a151e102077704f05a9a40eb"
+    },
+    {
+      "name": "egui_kittest",
+      "version": "0.37.0",
+      "upstream": "egui:crates/egui_kittest",
+      "workspace": "Cargo.toml",
+      "if_locked": true,
+      "tree_sha256": "25745f6131c89f3d2a6feb410c06980474633b4ee09c0fe396a4895d315bb310"
     },
     {
       "name": "aros-gui-sys",
