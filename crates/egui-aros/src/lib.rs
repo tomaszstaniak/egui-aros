@@ -634,6 +634,8 @@ struct Runner<'a> {
     woke_by_timeout: bool,
     /// The due time of the repaint that queued the pending redraw.
     due_taken: Option<Instant>,
+    /// A panic caught in a callback, resumed by `run` once the window is closed.
+    panic: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl Runner<'_> {
@@ -928,8 +930,8 @@ fn present(window: &Window, renderer: &raster::Renderer) {
     let _ = (window, renderer);
 }
 
-impl ApplicationHandler<()> for Runner<'_> {
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+impl Runner<'_> {
+    fn on_new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
         if !matches!(cause, StartCause::Poll) {
             self.woke_by_timeout = matches!(cause, StartCause::ResumeTimeReached { .. });
         }
@@ -941,7 +943,7 @@ impl ApplicationHandler<()> for Runner<'_> {
         }
     }
 
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.running.is_none() && self.error.is_none() {
             if let Err(e) = self.open(event_loop) {
                 self.error = Some(e);
@@ -950,14 +952,14 @@ impl ApplicationHandler<()> for Runner<'_> {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+    fn on_user_event(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(due) = self.repaint.take_due(Instant::now()) {
             self.due_taken.get_or_insert(due);
             self.queue_redraw();
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn on_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         if self.running.is_none() {
             return;
         }
@@ -997,7 +999,7 @@ impl ApplicationHandler<()> for Runner<'_> {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn on_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         if let Some(due) = self.repaint.take_due(now) {
             self.due_taken.get_or_insert(due);
@@ -1025,7 +1027,7 @@ impl ApplicationHandler<()> for Runner<'_> {
         }
     }
 
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+    fn on_exiting(&mut self) {
         // Before winit frees the loop's signal: no wake may reach it afterwards.
         self.repaint.waker.disable();
         if let Some(mut r) = self.running.take() {
@@ -1033,6 +1035,48 @@ impl ApplicationHandler<()> for Runner<'_> {
             #[cfg(feature = "glow")]
             drop(r.gl.take());
         }
+    }
+
+    /// Runs one event-loop callback. A panic in it (the program's code or a renderer) closes the
+    /// window while the loop still runs and ends the loop; `run` resumes the panic afterwards. A
+    /// panic left to unwind through winit drops the window after the loop is gone, and on AROS
+    /// that window then stays on screen after the program has ended.
+    fn guarded(&mut self, event_loop: &ActiveEventLoop, f: impl FnOnce(&mut Self, &ActiveEventLoop)) {
+        if self.panic.is_some() {
+            return;
+        }
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self, event_loop))) {
+            self.panic = Some(payload);
+            // A second panic while closing must not hide the first.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.close(event_loop)));
+            event_loop.exit();
+        }
+    }
+}
+
+impl ApplicationHandler<()> for Runner<'_> {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        self.guarded(event_loop, |r, el| r.on_new_events(el, cause));
+    }
+
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.guarded(event_loop, Self::on_resumed);
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
+        self.guarded(event_loop, Self::on_user_event);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        self.guarded(event_loop, |r, el| r.on_window_event(el, event));
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.guarded(event_loop, Self::on_about_to_wait);
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.on_exiting();
     }
 }
 
@@ -1068,6 +1112,7 @@ pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<()
         wait_timeout: None,
         woke_by_timeout: false,
         due_taken: None,
+        panic: None,
     };
     let result = event_loop.run_app(&mut runner).map_err(Error::EventLoop);
     // Also covers a loop that ended without `exiting` (an error before the window opened).
@@ -1075,10 +1120,14 @@ pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<()
     // The callback holds the repaint state; requests after this point go nowhere.
     ctx.set_request_repaint_callback(|_| {});
     let error = runner.error.take();
+    let panic = runner.panic.take();
     drop(runner);
     // The GL context and window went with the runner.
     #[cfg(feature = "glow")]
     gl::close_library();
+    if let Some(payload) = panic {
+        std::panic::resume_unwind(payload);
+    }
     result?;
     error.map_or(Ok(()), Err)
 }
