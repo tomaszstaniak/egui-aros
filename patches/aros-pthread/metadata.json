@@ -1,0 +1,16 @@
+{
+  "id": "pthread-v11-compat-egui-aros",
+  "upstream": "https://github.com/deadwood2/AROS",
+  "base": "5376f09bc1ed0c36a12fbb096406013f8a046e89",
+  "status": "local-only",
+  "v1_applicability": "The detach-after-finish fix has an equivalent in mainline c31d3294fb1165642f6ff85028396ad4c3f80f12. Do not stack old-v11 pthread internals onto v1.",
+  "checked_upstream": "5b5fd4cfd4f039927c0d1bb9cdd7f4fc8644d23e",
+  "checked_date": "2026-11-02",
+  "checked_upstream_scope": "Verified remote HEAD identity; this metadata review did not rebuild or exhaustively diff current pthread.",
+  "validation": "Existing patch headers document historical old-v11 reproduction and runtime checks. No build/runtime repeated during metadata cleanup; no new v1 qualification.",
+  "next_action": "Retain only for consumers of the old-v11 SDK; check current v11 before retiring it. No duplicate mainline submission.",
+  "canonical_fix_id": "pthread-v11-detach-after-finish",
+  "consumer_series_sha256": "029b4aa6a8cc681c1dd6a35f523f3dee92512ee9a29589a809506ac8d7d34e98",
+  "canonical_owner_id": "pthread-v11-compat-photocraft",
+  "record_role": "consumer"
+}
