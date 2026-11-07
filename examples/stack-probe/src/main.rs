@@ -4,6 +4,7 @@
 //!   stack-probe return         uses ~700 KB of stack in a recursion, returns 0
 //!   stack-probe exit           calls std::process::exit(7) ~700 KB deep
 //!   stack-probe panic          panics ~700 KB deep (status 101 with unwinding, an abort otherwise)
+//!   stack-probe thread         runs the recursion on a thread with an 8 MiB stack, joins it, returns 0
 //!
 //! A Shell's `Echo $RC` after each shows the status; the Shell must still work afterwards
 //! (the program's stack is freed and the task's bounds restored).
@@ -32,8 +33,18 @@ fn main() {
             let r = deep(700, &action);
             println!("returned {r}");
         }
+        "thread" => {
+            let r = std::thread::Builder::new()
+                .name("stack-probe".into())
+                .stack_size(8 << 20)
+                .spawn(|| deep(700, "return"))
+                .expect("spawn")
+                .join()
+                .expect("join");
+            println!("thread returned {r}");
+        }
         _ => {
-            eprintln!("usage: stack-probe size|return|exit|panic");
+            eprintln!("usage: stack-probe size|return|exit|panic|thread");
             std::process::exit(20);
         }
     }
