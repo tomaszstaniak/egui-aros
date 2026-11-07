@@ -50,6 +50,18 @@ pub fn set_clipboard_image(width: u32, height: u32, stride: usize, rgba: &[u8]) 
     }
 }
 
+/// Writes a FORM ILBM with exactly these BMHD and BODY payloads, unchecked: for tests and tools
+/// that need a damaged or unusual picture on the clipboard. Use [`set_clipboard_image`] otherwise.
+pub fn write_ilbm_payloads(bmhd: &[u8; 20], body: &[u8]) -> Result<(), String> {
+    #[cfg(target_os = "aros")]
+    return native::write(bmhd, body);
+    #[cfg(not(target_os = "aros"))]
+    {
+        let _ = (bmhd, body);
+        Err("no system clipboard on this platform".into())
+    }
+}
+
 /// Checks a picture's size against the limits; the byte count of its RGBA pixels.
 fn checked_size(width: u32, height: u32) -> Result<usize, String> {
     if width == 0 || height == 0 {
