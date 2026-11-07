@@ -136,3 +136,36 @@ unsigned long ea_startup_stack_size(void) {
     struct Task *me = FindTask(NULL);
     return (unsigned long)((UBYTE *)me->tc_SPUpper - (UBYTE *)me->tc_SPLower);
 }
+
+/* Names of the tasks on the system's ready and waiting lists, one per line ("name\tstate"),
+ * into out (cap bytes, NUL-terminated); returns the number of tasks. For diagnostics: which
+ * threads of a program are still alive when it should be ending. */
+#include <exec/execbase.h>
+
+int ea_startup_task_names(char *out, int cap) {
+    struct List *lists[2];
+    int count = 0, used = 0, i;
+    if (cap <= 0) return 0;
+    out[0] = '\0';
+    Forbid();
+    lists[0] = &SysBase->TaskReady;
+    lists[1] = &SysBase->TaskWait;
+    for (i = 0; i < 2; i++) {
+        struct Node *n;
+        for (n = lists[i]->lh_Head; n->ln_Succ; n = n->ln_Succ) {
+            const char *name = n->ln_Name ? n->ln_Name : "?";
+            int len = (int)strlen(name);
+            count++;
+            if (used + len + 3 < cap) {
+                memcpy(out + used, name, len);
+                used += len;
+                out[used++] = '\t';
+                out[used++] = i ? 'w' : 'r';
+                out[used++] = '\n';
+                out[used] = '\0';
+            }
+        }
+    }
+    Permit();
+    return count;
+}

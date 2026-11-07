@@ -16,6 +16,7 @@ mod native {
         pub fn ea_startup_absolute(name: *const c_char, out: *mut c_char, cap: i32) -> i32;
         pub fn ea_startup_error(title: *const c_char, message: *const c_char);
         pub fn ea_startup_stack_size() -> std::ffi::c_ulong;
+        pub fn ea_startup_task_names(out: *mut c_char, cap: i32) -> i32;
     }
     pub fn cstr(s: &str) -> Result<CString, String> {
         CString::new(s).map_err(|_| "path or setting contains NUL".into())
@@ -70,6 +71,22 @@ pub fn stack_size() -> Option<usize> {
     return Some(unsafe { native::ea_startup_stack_size() } as usize);
     #[cfg(not(target_os = "aros"))]
     None
+}
+
+/// The names of the system's tasks (ready and waiting), for diagnostics: a program logs them when
+/// it should be ending, to see which of its threads are still alive (AROS's pthread library
+/// waits for every thread at exit). Empty on other systems.
+pub fn task_names() -> Vec<String> {
+    #[cfg(target_os = "aros")]
+    {
+        let mut buf = vec![0u8; 16 * 1024];
+        // SAFETY: the buffer holds the stated number of bytes; the C side NUL-terminates.
+        unsafe { native::ea_startup_task_names(buf.as_mut_ptr().cast(), buf.len() as i32) };
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        return String::from_utf8_lossy(&buf[..end]).lines().map(str::to_owned).collect();
+    }
+    #[cfg(not(target_os = "aros"))]
+    Vec::new()
 }
 
 /// Sets the environment variable `name` to `value` unless it is set already (a program's default
