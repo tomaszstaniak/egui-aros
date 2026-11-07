@@ -74,7 +74,7 @@
       "version": "0.37.0",
       "upstream": "egui:crates/egui-winit",
       "workspace": "Cargo.toml",
-      "tree_sha256": "bd900c55b6016a839ba7f69258270749582b6b12cb50bedee693d935f535271f"
+      "tree_sha256": "e629cf0e510fccab7eb5ab2491e51fa2bf90fb275a229716ef6348c3c65470c5"
     },
     {
       "name": "egui_glow",
