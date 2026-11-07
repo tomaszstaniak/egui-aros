@@ -56,7 +56,7 @@ pub fn quiet_dos() {
 /// (the same task, so windows and signals stay where they are). A panic in `f` is caught on the
 /// new stack and resumed after the switch back. If the stack cannot be allocated, `f` runs on
 /// the current one and a warning is printed.
-pub fn run_with_stack<R>(bytes: usize, f: impl FnOnce() -> R) -> R {
+pub fn run_with_stack<R, F: FnOnce() -> R>(bytes: usize, f: F) -> R {
     #[cfg(target_os = "aros")]
     {
         struct Call<F, R> {
@@ -70,11 +70,11 @@ pub fn run_with_stack<R>(bytes: usize, f: impl FnOnce() -> R) -> R {
                 call.out = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)));
             }
         }
-        let mut call = Call { f: Some(f), out: None };
+        let mut call: Call<F, R> = Call { f: Some(f), out: None };
         // SAFETY: the trampoline matches the C signature and gets a pointer to `call`, which
         // outlives the call; the C side runs it once, synchronously.
         let rc = unsafe {
-            native::ea_startup_run_with_stack(bytes as std::ffi::c_ulong, trampoline::<_, R>, &mut call as *mut Call<_, R> as *mut std::ffi::c_void)
+            native::ea_startup_run_with_stack(bytes as std::ffi::c_ulong, trampoline::<F, R>, &mut call as *mut Call<F, R> as *mut std::ffi::c_void)
         };
         if rc != 0 {
             eprintln!("no memory for a {bytes}-byte stack; running on the current stack");
