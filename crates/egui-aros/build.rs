@@ -3,7 +3,6 @@
 //! the same SDK headers as the final link (ABIv1 and ABIv11 inline library calls differently).
 fn main() {
     println!("cargo:rerun-if-changed=c/egui_aros.c");
-    println!("cargo:rerun-if-changed=c/clipimage.c");
     for var in ["AROS_CC", "AROS_AR", "AROS_SDK"] {
         println!("cargo:rerun-if-env-changed={var}");
     }
@@ -21,7 +20,5 @@ fn main() {
         build.flag(format!("--sysroot={sdk}"));
     }
     // AROS executables are relocatable objects: no PIC, which cc adds by default.
-    build.file("c/egui_aros.c").file("c/clipimage.c").pic(false).compile("egui_aros_c");
-    // DoMethodA (clipimage.c) is in amiga.lib.
-    println!("cargo:rustc-link-lib=amiga");
+    build.file("c/egui_aros.c").pic(false).compile("egui_aros_c");
 }
