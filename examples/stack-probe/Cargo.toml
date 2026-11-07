@@ -1,0 +1,17 @@
+[package]
+name = "egui-aros-stack-probe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Native check of aros-startup's minimum stack: size, return, exit from depth, panic"
+
+[[bin]]
+name = "stack-probe"
+path = "src/main.rs"
+
+[dependencies]
+# Supplied by a Craft port's build (scripts/craft.py --tool) for each AROS target.
+aros-startup = "0.1"
+
+[workspace]

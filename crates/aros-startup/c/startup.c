@@ -89,32 +89,48 @@ void ea_startup_error(const char *title, const char *message) {
     EasyRequestArgs(NULL, &es, NULL, (RAWARG)args);
 }
 
-/* Runs fn(arg) on a stack of at least `size` bytes, on this task: directly when the current stack
- * is that large already, else on a new stack through exec's NewStackSwap (AROS starts a program
- * on its caller's stack: 40,960 bytes in an AROS One Shell unless `Stack` raised it). Returns 0
- * after fn returned, -1 when the stack could not be allocated (fn did not run). */
+/* A minimum stack declared by the program (`ULONG __stack = N;`, as libnix), honoured at start-up:
+ * when the current stack (a Shell's, 40,960 bytes on AROS One; a Workbench icon's) is smaller,
+ * the rest of the start-up chain (the C library set-up and its exit() landing point, main()) runs
+ * on a new stack of that size on the same task, so exit() from anywhere returns here and the
+ * stack is freed. The same entry is proposed for AROS's own start-up code; while a system lacks
+ * it, linking this object adds it (a second entry finds the stack large enough and does nothing). */
 #include <exec/tasks.h>
 #include <exec/memory.h>
+#include <aros/symbolsets.h>
+#include <aros/startup.h>
 
-static void stack_trampoline(void (*fn)(void *), void *arg) { fn(arg); }
+extern const ULONG __stack __attribute__((weak));
 
-int ea_startup_run_with_stack(unsigned long size, void (*fn)(void *), void *arg) {
+static void ea_startup_stack_entry(struct ExecBase *SysBase) {
     struct Task *me = FindTask(NULL);
-    unsigned long have = (unsigned long)((UBYTE *)me->tc_SPUpper - (UBYTE *)me->tc_SPLower);
-    if (have >= size) {
-        fn(arg);
-        return 0;
+    IPTR want = &__stack ? (IPTR)__stack : 0;
+    IPTR have = (IPTR)me->tc_SPUpper - (IPTR)me->tc_SPLower;
+    want = (want + 15) & ~(IPTR)15;
+    if (want <= have) {
+        __startup_entries_next();
+        return;
     }
-    APTR stack = AllocMem(size, MEMF_ANY);
-    if (!stack) return -1;
+    UBYTE *stack = AllocMem(want, MEMF_ANY);
+    if (!stack) {
+        __startup_entries_next();
+        return;
+    }
     struct StackSwapStruct sss;
     struct StackSwapArgs args = {{ 0 }};
     sss.stk_Lower = stack;
-    sss.stk_Upper = (UBYTE *)stack + size;
+    sss.stk_Upper = stack + want;
     sss.stk_Pointer = sss.stk_Upper;
-    args.Args[0] = (IPTR)fn;
-    args.Args[1] = (IPTR)arg;
-    NewStackSwap(&sss, (APTR)stack_trampoline, &args);
-    FreeMem(stack, size);
-    return 0;
+    args.Args[0] = (IPTR)SysBase;
+    NewStackSwap(&sss, (APTR)___startup_entries_next, &args);
+    FreeMem(stack, want);
+}
+
+/* After detaching (-100), before every other entry. */
+ADD2SET(ea_startup_stack_entry, PROGRAM_ENTRIES, -60);
+
+/* The current task's stack size, for checks. */
+unsigned long ea_startup_stack_size(void) {
+    struct Task *me = FindTask(NULL);
+    return (unsigned long)((UBYTE *)me->tc_SPUpper - (UBYTE *)me->tc_SPLower);
 }
