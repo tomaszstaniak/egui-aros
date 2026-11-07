@@ -38,12 +38,40 @@ fn main() {
   `Context::set_embed_viewports(true)` (egui's default, set again because the
   context comes from the program), so a viewport a program would show as a
   native window elsewhere appears as an egui window inside the main one.
+- Text in the system character set: the set Locale preferences name in
+  `ENV:CHARSET` (codesets.library), else codesets.library's default, else
+  ISO 8859-1. Keymap text, window titles and requester texts are converted with
+  it; `egui_aros::system_charset()` tells which set is in use.
 - Text clipboard: Ctrl or Amiga + C, X, V go through clipboard.device unit 0
-  (IFF FTXT, ISO 8859-1). `egui_aros::clipboard_text()` reads it directly.
+  (IFF FTXT). Text the system set holds is written in it without a CSET chunk,
+  so every AROS program reads it; other text is written as UTF-8 with CSET 106
+  (as TextEditor.mcc and BetterString.mcc read it). `egui_aros::clipboard_text()`
+  and `set_clipboard_text()` read and write it directly.
+- Pictures on the clipboard: Ctrl or Amiga + V with a picture and no text sends
+  `Event::PasteImage`. `egui_aros::clipboard_image()` reads the picture through
+  datatypes (any format a picture datatype reads; `ClipboardImage::Pixels` as
+  straight RGBA8, `Unreadable` with the reason, `None` for an empty or text
+  clipboard; at most 16384 pixels a side and 256 MiB). `set_clipboard_image()`
+  writes a 24-bit IFF ILBM (alpha is not written). Reading never changes the
+  clipboard.
 - The busy pointer while egui's cursor is `CursorIcon::Wait`; `open_url` and
   egui's `OpenUrl` commands use the system's `OpenURL` command.
 - With the `asl` feature: `egui_aros::asl::request` shows ASL file, multi-file,
   save and drawer requesters and returns absolute paths.
+
+## Start-up (`egui_aros::startup`, the `aros-startup` crate)
+
+- `minimum_stack!(bytes)` declares the program's minimum stack (`__stack`); the
+  start-up code then runs the program on a stack of that size when it is started
+  from a Shell with a smaller one (40,960 bytes in an AROS One Shell).
+  Returning from `main` and `exit()` both work.
+- `startup(keys)` returns a Workbench start's documents (as -nix paths) and the
+  requested ToolTypes; `program_dir()`, `absolute(name)`, `dos_to_nix`,
+  `nix_to_dos` convert names; `quiet_dos()` turns "insert volume" requesters
+  into errors; `show_error` shows a requester; `task_names()` lists the system's
+  tasks (for finding threads that keep a program from ending: AROS waits for
+  every thread at exit).
+- The crate has no egui dependency, so command-line programs use it too.
 
 ## Renderer
 
@@ -64,6 +92,11 @@ GL_VERSION, the GLSL version, and `software`: `Some(true)` when GL_RENDERER
 names a software rasterizer (softpipe, llvmpipe, swrast, "Software"),
 `Some(false)` for a known hardware driver, `None` otherwise. The same is logged
 as one line (`RendererInfo::summary`). `renderer_name()` gives a short text.
+
+`egui_aros::launch::choose` takes the choice from `--gui-renderer`, the
+Workbench ToolType `GUI_RENDERER`, the `GUI_RENDERER` environment variable and
+the program's default, in that order; `launch::effective` keeps AUTO on the CPU
+on the Raspberry Pi, where OpenGL is not verified.
 
 On AROS One 1.3 under QEMU the OpenGL renderer is Mesa softpipe, which draws on
 the CPU and is slower than egui-aros's own CPU renderer; use it for function
@@ -104,10 +137,10 @@ being shown). `Options::measure_paint` adds the renderer's per-kind statistics.
 
 ## Known limitations
 
-- Keymap text is read as ISO 8859-1. With a keymap that produces another 8-bit
-  charset (the Polish `pc105_pl` produces ISO 8859-2), letters outside ASCII
-  arrive as the wrong characters; text shown by the program is not affected.
-- No pictures on the clipboard, no files dropped on the window, no pointer
+- A UTF-8 name returned by a requester is used as it is; a name in the system
+  character set is shown right, but Rust's std opens its UTF-8 form, which is a
+  different name on disk.
+- No files dropped on the window, no pointer
   shapes other than the busy pointer, one window per program (other viewports
   are drawn inside it).
 - No input method (winit's `reset_ime` does nothing on AROS) and no
