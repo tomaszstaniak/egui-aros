@@ -586,7 +586,7 @@ def cmd_test(args):
     (aros-gui-sys is not on crates.io; the patched crates are what AROS builds use)."""
     cfg = eaconfig.load(["cargo_home", "build_root"])
     crates = cmd_crates(args, quiet=True)
-    command = ["cargo", "test", "-p", "egui-aros", "--all-features", "--lib"]
+    command = ["cargo", "test", "-p", "egui-aros", "-p", "aros-startup", "--all-features", "--lib"]
     for name, info in crates.items():
         command += ["--config", f"patch.crates-io.{name}.path=" + json.dumps(info["path"])]
     env = dict(os.environ, CARGO_HOME=cfg["cargo_home"], CARGO_TARGET_DIR=str(Path(cfg["build_root"]) / "host-target"))
@@ -606,6 +606,13 @@ def cmd_vendor(args):
     files = {p.relative_to(REPO / "crates" / "egui-aros").as_posix(): (p.read_bytes(), os.access(p, os.X_OK))
              for p in (REPO / "crates" / "egui-aros").rglob("*") if p.is_file()}
     sync_tree(files, dest / "egui-aros")
+    # This repository's other crates, beside egui-aros (its path dependencies resolve there) and
+    # patched in for programs that use them directly (aros-startup in a command-line program).
+    for own in ("aros-startup",):
+        own_files = {p.relative_to(REPO / "crates" / own).as_posix(): (p.read_bytes(), os.access(p, os.X_OK))
+                     for p in (REPO / "crates" / own).rglob("*") if p.is_file()}
+        sync_tree(own_files, dest / own)
+        crates[own] = {"package": own, "path": str(dest / own), "version": "0.1.0", "tree_sha256": tree_hash(dest / own)}
     record = {"egui_aros": str(dest / "egui-aros"),
               "egui_aros_tree_sha256": tree_hash(dest / "egui-aros"),
               "upstreams": upstreams(),

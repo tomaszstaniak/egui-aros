@@ -24,7 +24,9 @@ mod gl;
 pub mod asl;
 pub mod clipboard_image;
 pub mod launch;
-pub mod startup;
+/// Program start (Workbench data, paths, quiet DOS): the egui-free `aros-startup` crate, which
+/// command-line programs use directly.
+pub use aros_startup as startup;
 pub use clipboard_image::{clipboard_image, set_clipboard_image, ClipboardImage};
 
 use std::cell::RefCell;

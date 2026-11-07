@@ -31,6 +31,7 @@ glutin-winit = { version = "=0.5.0", default-features = false, optional = true }
 # The C glue (AROS only) and, on every target, the system character set and FTXT rules (with
 # this repository's aros-gui-sys patches).
 aros-gui-sys = "0.1"
+aros-startup = { version = "0.1", path = "../aros-startup" }
 
 
 [build-dependencies]

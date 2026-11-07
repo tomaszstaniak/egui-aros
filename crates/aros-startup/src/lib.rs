@@ -1,4 +1,4 @@
-//! Program start on AROS: Workbench start data (ToolTypes, documents), the program's drawer, DOS
+//! Program start on AROS (no GUI dependency, so command-line programs use it too): Workbench start data (ToolTypes, documents), the program's drawer, DOS
 //! names as -nix paths, and DOS requesters off. From the VectorCraft AROS port, shared by the
 //! Craft programs. On other systems every function is a plain fallback, so programs build and
 //! their tests run on the host.
