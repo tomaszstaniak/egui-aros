@@ -1,0 +1,17 @@
+[package]
+name = "aros-startup"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Program start on AROS without a GUI dependency: Workbench documents and ToolTypes, the program's drawer, DOS and -nix names, DOS requesters off, an error requester"
+
+[dependencies]
+# The system character set for requester texts (on every target; the C glue is AROS only).
+aros-gui-sys = "0.1"
+
+[build-dependencies]
+cc = "1.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("aros"))'] }

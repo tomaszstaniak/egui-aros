@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/egui-aros", "examples/glow-probe", "examples/lifecycle-probe", "examples/cpu-probe"]
+members = ["crates/egui-aros", "crates/aros-startup", "examples/glow-probe", "examples/lifecycle-probe", "examples/cpu-probe"]
+# Built by the Craft ports' scripts/craft.py --tool for each AROS target.
+exclude = ["examples/clip-probe", "examples/stack-probe"]
 
 [profile.release]
 opt-level = 3

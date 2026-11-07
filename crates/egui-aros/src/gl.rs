@@ -16,13 +16,46 @@ pub struct Gl {
     painter: egui_glow::Painter,
     surface: Surface<WindowSurface>,
     context: PossiblyCurrentContext,
-    /// GL_VENDOR, GL_RENDERER, GL_VERSION.
-    pub info: String,
+    pub vendor: Option<String>,
+    pub renderer: Option<String>,
+    pub version: Option<String>,
+    pub glsl_version: Option<String>,
+}
+
+/// gl.library is opened here, only when a program asks for OpenGL, and closed by [`close_library`]
+/// after the window and its context are gone (aros-gui-sys patch 0002: libGL's autoinit, which
+/// opened it at every program start, is not linked).
+static LIBRARY_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn open_library() -> Result<(), String> {
+    #[cfg(target_os = "aros")]
+    {
+        // SAFETY: called on the loop's task before any GL call; idempotent.
+        if unsafe { aros_gui_sys::aros_gui_gl_open() } == 0 {
+            return Err("gl.library (version 20 or later) could not be opened".into());
+        }
+        LIBRARY_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Close gl.library if [`open`] opened it. Only after every context has been destroyed.
+pub fn close_library() {
+    if LIBRARY_OPEN.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        #[cfg(target_os = "aros")]
+        // SAFETY: the window, surface and context were dropped before `run` returns.
+        unsafe {
+            aros_gui_sys::aros_gui_gl_close()
+        };
+    }
 }
 
 /// Opens the window through glutin-winit and makes a GL context current on it. On failure the
 /// window is still returned when it was opened, so the program can draw with the CPU instead.
 pub fn open(event_loop: &ActiveEventLoop, attributes: WindowAttributes) -> (Option<Window>, Result<Gl, String>) {
+    if let Err(e) = open_library() {
+        return (event_loop.create_window(attributes).ok(), Err(e));
+    }
     let built = glutin_winit::DisplayBuilder::new()
         .with_window_attributes(Some(attributes.clone()))
         .build(event_loop, ConfigTemplateBuilder::new(), |mut configs| configs.next().expect("GLA offers one config"));
@@ -32,6 +65,12 @@ pub fn open(event_loop: &ActiveEventLoop, attributes: WindowAttributes) -> (Opti
         Err(e) => return (event_loop.create_window(attributes).ok(), Err(format!("GL display: {e}"))),
     };
     let result = (|| {
+        // A test build can make the context fail on purpose, to exercise Auto's fallback and
+        // Gpu's error on a system where GL works.
+        #[cfg(feature = "gl-failure-test")]
+        if std::env::var_os("EGUI_AROS_TEST_GL_FAILURE").is_some() {
+            return Err("GL context: failure injected by EGUI_AROS_TEST_GL_FAILURE".to_owned());
+        }
         let display = config.display();
         let handle = window.window_handle().map_err(|e| e.to_string())?.as_raw();
         let context = unsafe { display.create_context(&config, &ContextAttributesBuilder::new().build(Some(handle))) }
@@ -50,13 +89,13 @@ pub fn open(event_loop: &ActiveEventLoop, attributes: WindowAttributes) -> (Opti
         .map_err(|e| format!("GL surface: {e}"))?;
         let context = context.make_current(&surface).map_err(|e| format!("GL make current: {e}"))?;
         let gl = Arc::new(unsafe { glow::Context::from_loader_function_cstr(|name| display.get_proc_address(name)) });
-        let info = {
+        let [vendor, renderer, version, glsl_version] = {
             use glow::HasContext as _;
-            let get = |name| unsafe { gl.get_parameter_string(name) };
-            format!("{} / {} / {}", get(glow::VENDOR), get(glow::RENDERER), get(glow::VERSION))
+            [glow::VENDOR, glow::RENDERER, glow::VERSION, glow::SHADING_LANGUAGE_VERSION]
+                .map(|name| Some(unsafe { gl.get_parameter_string(name) }).filter(|s| !s.is_empty()))
         };
         let painter = egui_glow::Painter::new(gl, "", None, false).map_err(|e| format!("GL painter: {e}"))?;
-        Ok(Gl { painter, surface, context, info })
+        Ok(Gl { painter, surface, context, vendor, renderer, version, glsl_version })
     })();
     (Some(window), result)
 }

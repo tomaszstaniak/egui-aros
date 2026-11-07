@@ -50,7 +50,7 @@ text conversions), with the patched crates in place.
 
 | Package | What it is |
 |---|---|
-| `egui-aros-cpu-probe` | a small scene (text, edit fields, scrolling, a translucent texture) on egui-aros |
+| `egui-aros-cpu-probe` | a small scene (text, edit fields, scrolling, a translucent texture) on egui-aros; feature `glow` adds OpenGL, `gl-failure-test` adds a context failure on request |
 | `egui-aros-glow-probe` | the same scene on eframe's glow renderer through glutin's GLA backend |
 | `egui-aros-lifecycle-probe` | logs the task's signals around each winit/glutin step |
 
@@ -58,7 +58,11 @@ Both probes take `EGUI_PROBE_SIZE=<w>x<h>`, `EGUI_PROBE_FRAMES=<n>` (repaint
 continuously and close after n frames) and `EGUI_PROBE_REPORT=<file>` (frame
 times and the task's signals at start and end); the CPU probe also takes
 `EGUI_PROBE_WAKER=1` (another thread requests repaints every millisecond, also
-after the window has closed). Give them `Stack 4000000` in the Shell.
+after the window has closed) and `EGUI_PROBE_RENDERER=cpu|auto|gpu` (the
+`RendererRequest`; default `auto` when built with `glow`, else `cpu`). A CPU probe
+built with `--features gl-failure-test` makes the OpenGL context fail when
+`EGUI_AROS_TEST_GL_FAILURE` is set, to check the fallback and the error on a
+system where OpenGL works. Give them `Stack 4000000` in the Shell.
 `tests/guest/` has AmigaDOS scripts that run them.
 
 ## Using egui-aros from another repository
@@ -67,4 +71,14 @@ after the window has closed). Give them `Stack 4000000` in the Shell.
 this tree's crate and the patched crates it needs under `DIR` and writes
 `DIR/patches.json`; a program's build adds each path as a `[patch.crates-io]`
 entry. Pin the egui-aros commit in the program's own records and run `vendor`
-from that commit.
+from that commit (with `EGUI_AROS_UPSTREAM_ROOT` naming checkouts made by
+`ea.py fetch` when the commit is extracted elsewhere).
+
+On this branch every egui crate comes from the pinned egui 0.37 workspace:
+ecolor, emath, epaint, epaint_default_fonts, egui, egui-winit, egui_glow and
+eframe always, and egui_extras, egui_system_font_provider, egui_inspection,
+egui_demo_lib, egui-wgpu and egui_kittest when the program's lock uses them, so
+that no egui crate is left on another source. winit is the pinned winit fork with
+the AROS backend. A program whose `[patch.crates-io]` names these crates as Git
+dependencies replaces those entries with the paths from `patches.json` (Cargo
+also lets `--config patch.crates-io.<name>.path=...` take precedence).

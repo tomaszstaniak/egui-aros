@@ -7,8 +7,8 @@ publish = false
 description = "Minimal eframe/glow program: does the standard egui desktop stack run on AROS?"
 
 [dependencies]
-egui = { version = "=0.36.2", default-features = false }
+egui = { version = "=0.37.0", default-features = false }
 # The C helper that reports the task's signals.
 egui-aros = { path = "../../crates/egui-aros" }
-eframe = { version = "=0.36.2", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "=0.37.0", default-features = false, features = ["glow", "default_fonts"] }
 

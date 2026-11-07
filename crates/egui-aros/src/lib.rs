@@ -22,6 +22,12 @@ mod gl;
 
 #[cfg(feature = "asl")]
 pub mod asl;
+pub mod clipboard_image;
+pub mod launch;
+/// Program start (Workbench data, paths, quiet DOS): the egui-free `aros-startup` crate, which
+/// command-line programs use directly.
+pub use aros_startup as startup;
+pub use clipboard_image::{clipboard_image, set_clipboard_image, ClipboardImage};
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -154,42 +160,34 @@ pub fn caps_lock() -> bool {
     false
 }
 
-/// The system clipboard's text (clipboard.device unit 0, IFF FTXT, read as ISO 8859-1), for
-/// programs that read it outside egui's own paste (which goes through egui-winit's clipboard).
+/// The system clipboard's text (clipboard.device unit 0, IFF FTXT), for programs that read it
+/// outside egui's own paste (which goes through egui-winit's clipboard, the same code): bytes in
+/// the system character set, or UTF-8 under an FTXT CSET of 106. `None` when the clipboard holds
+/// no text (empty, or only a picture).
 pub fn clipboard_text() -> Option<String> {
     #[cfg(target_os = "aros")]
-    {
-        let mut len = 0;
-        // SAFETY: an out-parameter; the returned buffer is freed with aros_gui_clip_free below.
-        let text = unsafe { aros_gui_sys::aros_gui_clip_read(&mut len) };
-        if text.is_null() {
-            return None;
-        }
-        // SAFETY: the glue returns `len` bytes at `text`.
-        let out = unsafe { std::slice::from_raw_parts(text, len.max(0) as usize) }.iter().map(|&b| char::from(b)).collect();
-        // SAFETY: allocated by aros_gui_clip_read.
-        unsafe { aros_gui_sys::aros_gui_clip_free(text) };
-        Some(out)
-    }
+    return aros_gui_sys::clipboard::read_text();
     #[cfg(not(target_os = "aros"))]
     None
 }
 
-/// Writes text to the system clipboard (as [`clipboard_text`] reads it; characters outside
-/// ISO 8859-1 become `?`). `false` if the clipboard could not be written.
+/// Writes text to the system clipboard as [`clipboard_text`] reads it: in the system character
+/// set when it holds every character (so every AROS program reads it), else as UTF-8 with CSET
+/// 106. `false` if the clipboard could not be written.
 pub fn set_clipboard_text(text: &str) -> bool {
     #[cfg(target_os = "aros")]
-    {
-        let bytes: Vec<u8> = text.chars().map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')).collect();
-        let Ok(len) = i32::try_from(bytes.len()) else { return false };
-        // SAFETY: `bytes` holds `len` bytes for the duration of the call.
-        unsafe { aros_gui_sys::aros_gui_clip_write(bytes.as_ptr(), len) == 0 }
-    }
+    return aros_gui_sys::clipboard::write_text(text);
     #[cfg(not(target_os = "aros"))]
     {
         let _ = text;
         false
     }
+}
+
+/// The system character set keys, titles and clipboard text are converted with, read once
+/// from ENV:CHARSET through codesets.library ([`aros_gui_sys::charset`]).
+pub fn system_charset() -> &'static aros_gui_sys::charset::Charset {
+    aros_gui_sys::charset::system()
 }
 
 /// The URL with spaces, quotes, `*`, every control character and every non-ASCII byte
@@ -215,6 +213,27 @@ mod tests {
     use super::shell_safe_url;
 
     #[test]
+    fn auto_closes_software_gl_and_gpu_keeps_it() {
+        use super::{RendererRequest as R, auto_keeps_gl as keeps};
+        assert!(!keeps(R::Auto, Some(true)));
+        assert!(keeps(R::Auto, Some(false)));
+        assert!(keeps(R::Auto, None));
+        assert!(keeps(R::Gpu, Some(true)));
+    }
+
+    #[test]
+    fn software_renderers_are_recognised() {
+        use super::is_software_renderer as sw;
+        assert_eq!(sw("softpipe"), Some(true));
+        assert_eq!(sw("Gallium 0.4 on llvmpipe (LLVM 15.0, 256 bits)"), Some(true));
+        assert_eq!(sw("Mesa X11 swrast"), Some(true));
+        assert_eq!(sw("Software Rasterizer"), Some(true));
+        assert_eq!(sw("NV134 (nouveau)"), Some(false));
+        assert_eq!(sw("AMD Radeon RX 6600"), Some(false));
+        assert_eq!(sw("virgl"), None);
+    }
+
+    #[test]
     fn urls_cannot_leave_their_quotes() {
         assert_eq!(shell_safe_url("https://example.org/a?b=c#d"), "https://example.org/a?b=c#d");
         assert_eq!(shell_safe_url("x\" ; Delete SYS:"), "x%22%20;%20Delete%20SYS:");
@@ -222,12 +241,129 @@ mod tests {
     }
 }
 
-static RENDERER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// Which renderer a program asks for ([`Options::renderer`]). The `glow` feature only decides
+/// whether OpenGL is compiled in; this decides, at run time, whether it is used.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RendererRequest {
+    /// The CPU renderer. OpenGL is not touched (no glutin, gl.library or Mesa), even when the
+    /// `glow` feature is compiled in.
+    #[default]
+    Cpu,
+    /// Hardware OpenGL if a context can be made, else the CPU renderer; the reason is in
+    /// [`RendererInfo::reason`]. A context on a software rasterizer (softpipe, llvmpipe) is closed
+    /// again: under AROS it draws egui several times slower than the CPU renderer.
+    Auto,
+    /// OpenGL or nothing: without a context [`run`] returns [`Error::Renderer`] before any frame
+    /// is drawn. Never falls back to the CPU silently.
+    Gpu,
+}
 
-/// Which renderer draws the window: "CPU", or "OpenGL: vendor / renderer / version". Known once
-/// the window is open (before that, "CPU").
+/// The renderer that draws the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RendererKind {
+    Cpu,
+    OpenGl,
+}
+
+/// What [`run`] chose and why ([`renderer_info`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RendererInfo {
+    pub requested: RendererRequest,
+    pub actual: RendererKind,
+    /// Why OpenGL is not used when it was asked for (`Auto`), or why it failed (`Gpu`).
+    pub reason: Option<String>,
+    pub gl_vendor: Option<String>,
+    pub gl_renderer: Option<String>,
+    pub gl_version: Option<String>,
+    pub glsl_version: Option<String>,
+    /// `true` when GL_RENDERER names a software rasterizer (softpipe, llvmpipe, swrast,
+    /// "Software"), `false` for a known hardware driver, `None` when it cannot be told (or no GL).
+    pub software: Option<bool>,
+}
+
+impl RendererInfo {
+    fn cpu(requested: RendererRequest, reason: Option<String>) -> Self {
+        Self {
+            requested,
+            actual: RendererKind::Cpu,
+            reason,
+            gl_vendor: None,
+            gl_renderer: None,
+            gl_version: None,
+            glsl_version: None,
+            software: None,
+        }
+    }
+
+    /// One line for logs: the request, the renderer, the reason and the GL strings.
+    pub fn summary(&self) -> String {
+        let mut out = format!("renderer: requested {:?}, using {:?}", self.requested, self.actual);
+        if let Some(reason) = &self.reason {
+            out += &format!(", reason: {reason}");
+        }
+        if self.gl_renderer.is_some() || self.actual == RendererKind::OpenGl {
+            let s = |v: &Option<String>| v.clone().unwrap_or_else(|| "?".to_owned());
+            out += &format!(
+                ", GL_VENDOR {}, GL_RENDERER {}, GL_VERSION {}, GLSL {}, software {}",
+                s(&self.gl_vendor),
+                s(&self.gl_renderer),
+                s(&self.gl_version),
+                s(&self.glsl_version),
+                self.software.map_or("unknown", |b| if b { "yes" } else { "no" })
+            );
+        }
+        out
+    }
+}
+
+/// Whether a context made for `requested` is used: always for `Gpu`, and for `Auto` unless it
+/// is known to be a software rasterizer (an unknown driver may be hardware, so it is kept).
+#[cfg_attr(not(feature = "glow"), allow(dead_code))]
+fn auto_keeps_gl(requested: RendererRequest, software: Option<bool>) -> bool {
+    requested == RendererRequest::Gpu || software != Some(true)
+}
+
+/// Whether a GL_RENDERER string names a software rasterizer (`Some(true)`), a known hardware
+/// driver (`Some(false)`), or neither (`None`).
+pub fn is_software_renderer(gl_renderer: &str) -> Option<bool> {
+    let r = gl_renderer.to_ascii_lowercase();
+    const SOFTWARE: [&str; 5] = ["softpipe", "llvmpipe", "lavapipe", "swrast", "software"];
+    const HARDWARE: [&str; 12] =
+        ["nouveau", "radeon", "amd", "intel", "nvidia", "geforce", "quadro", "mali", "adreno", "vc4", "v3d", "apple"];
+    if SOFTWARE.iter().any(|k| r.contains(k)) {
+        Some(true)
+    } else if HARDWARE.iter().any(|k| r.contains(k)) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+static RENDERER: Mutex<Option<RendererInfo>> = Mutex::new(None);
+
+fn set_renderer_info(info: RendererInfo) {
+    log::info!("{}", info.summary());
+    *RENDERER.lock().unwrap_or_else(PoisonError::into_inner) = Some(info);
+}
+
+/// The renderer [`run`] chose, once it has decided (`None` before that).
+pub fn renderer_info() -> Option<RendererInfo> {
+    RENDERER.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// Which renderer draws the window: "CPU", "CPU (reason)", or "OpenGL: vendor / renderer /
+/// version". Known once the window is open (before that, "CPU").
 pub fn renderer_name() -> String {
-    RENDERER.get().cloned().unwrap_or_else(|| "CPU".to_owned())
+    match renderer_info() {
+        Some(i) if i.actual == RendererKind::OpenGl => format!(
+            "OpenGL: {} / {} / {}",
+            i.gl_vendor.unwrap_or_default(),
+            i.gl_renderer.unwrap_or_default(),
+            i.gl_version.unwrap_or_default()
+        ),
+        Some(RendererInfo { reason: Some(reason), requested: RendererRequest::Auto, .. }) => format!("CPU ({reason})"),
+        _ => "CPU".to_owned(),
+    }
 }
 
 /// The task's allocated signals (`tc_SigAlloc`), for leak checks; 0 on other systems.
@@ -254,6 +390,8 @@ pub struct Options {
     pub measure_paint: bool,
     /// Appended to every window title, the first one and those egui sets (a build label).
     pub title_suffix: String,
+    /// CPU (the default), OpenGL if possible, or OpenGL only; see [`RendererRequest`].
+    pub renderer: RendererRequest,
 }
 
 impl Default for Options {
@@ -266,6 +404,7 @@ impl Default for Options {
             idle_poll: None,
             measure_paint: false,
             title_suffix: String::new(),
+            renderer: RendererRequest::Cpu,
         }
     }
 }
@@ -347,6 +486,8 @@ pub trait App {
 pub enum Error {
     EventLoop(winit::error::EventLoopError),
     Window(String),
+    /// [`RendererRequest::Gpu`] and no OpenGL context (or OpenGL not compiled in).
+    Renderer(String),
 }
 
 impl std::fmt::Display for Error {
@@ -354,6 +495,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::EventLoop(e) => write!(f, "event loop: {e}"),
             Error::Window(e) => write!(f, "window: {e}"),
+            Error::Renderer(e) => write!(f, "renderer: {e}"),
         }
     }
 }
@@ -490,6 +632,8 @@ struct Runner<'a> {
     woke_by_timeout: bool,
     /// The due time of the repaint that queued the pending redraw.
     due_taken: Option<Instant>,
+    /// A panic caught in a callback, resumed by `run` once the window is closed.
+    panic: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl Runner<'_> {
@@ -501,25 +645,63 @@ impl Runner<'_> {
         if let Some((w, h)) = self.options.min_inner_size {
             attributes = attributes.with_min_inner_size(winit::dpi::PhysicalSize::new(w, h));
         }
+        let requested = self.options.renderer;
         #[cfg(feature = "glow")]
-        let (window, gl) = {
+        let (window, gl) = if requested == RendererRequest::Cpu {
+            let window = event_loop.create_window(attributes).map_err(|e| Error::Window(e.to_string()))?;
+            set_renderer_info(RendererInfo::cpu(requested, None));
+            (window, None)
+        } else {
             let (window, gl) = gl::open(event_loop, attributes);
-            let window = window.ok_or_else(|| Error::Window("Intuition could not open the window".into()))?;
             match gl {
                 Ok(gl) => {
-                    log::info!("renderer: OpenGL {}", gl.info);
-                    let _ = RENDERER.set(format!("OpenGL: {}", gl.info));
-                    (window, Some(gl))
+                    let window = window.ok_or_else(|| Error::Window("Intuition could not open the window".into()))?;
+                    let software = gl.renderer.as_deref().and_then(is_software_renderer);
+                    let keep = auto_keeps_gl(requested, software);
+                    set_renderer_info(RendererInfo {
+                        requested,
+                        actual: if keep { RendererKind::OpenGl } else { RendererKind::Cpu },
+                        reason: (!keep).then(|| "OpenGL is a software rasterizer, slower than the CPU renderer".to_owned()),
+                        gl_vendor: gl.vendor.clone(),
+                        gl_renderer: gl.renderer.clone(),
+                        gl_version: gl.version.clone(),
+                        glsl_version: gl.glsl_version.clone(),
+                        software,
+                    });
+                    if keep {
+                        (window, Some(gl))
+                    } else {
+                        // The window stays; the context goes, and Mesa with it, before any frame.
+                        drop(gl);
+                        gl::close_library();
+                        (window, None)
+                    }
+                }
+                Err(e) if requested == RendererRequest::Gpu => {
+                    // The window (if glutin opened it) closes here, before any frame is drawn.
+                    drop(window);
+                    set_renderer_info(RendererInfo::cpu(requested, Some(e.clone())));
+                    return Err(Error::Renderer(e));
                 }
                 Err(e) => {
-                    log::warn!("OpenGL not available ({e}); drawing with the CPU");
-                    let _ = RENDERER.set(format!("CPU (OpenGL failed: {e})"));
+                    let window = window.ok_or_else(|| Error::Window("Intuition could not open the window".into()))?;
+                    set_renderer_info(RendererInfo::cpu(requested, Some(format!("OpenGL failed: {e}"))));
                     (window, None)
                 }
             }
         };
         #[cfg(not(feature = "glow"))]
-        let window = event_loop.create_window(attributes).map_err(|e| Error::Window(e.to_string()))?;
+        let window = {
+            const NO_GL: &str = "built without OpenGL (feature glow)";
+            if requested == RendererRequest::Gpu {
+                set_renderer_info(RendererInfo::cpu(requested, Some(NO_GL.to_owned())));
+                return Err(Error::Renderer(NO_GL.to_owned()));
+            }
+            let window = event_loop.create_window(attributes).map_err(|e| Error::Window(e.to_string()))?;
+            let reason = (requested == RendererRequest::Auto).then(|| NO_GL.to_owned());
+            set_renderer_info(RendererInfo::cpu(requested, reason));
+            window
+        };
         let window = Rc::new(window);
         let size = window.inner_size();
         let state = egui_winit::State::new(self.ctx.clone(), ViewportId::ROOT, event_loop, Some(1.0), None, Some(16384));
@@ -619,7 +801,7 @@ impl Runner<'_> {
                 }
             }
             let mut actions = Vec::new();
-            egui_winit::process_viewport_commands(&self.ctx, &mut r.info, commands, &r.window, &mut actions);
+            egui_winit::process_viewport_commands(&self.ctx, &mut r.info, commands, &r.window, &mut r.state, &mut actions);
             if vo.repaint_delay < Duration::from_secs(3600) {
                 next_repaint = Some(vo.repaint_delay);
                 self.repaint.request(Instant::now() + vo.repaint_delay);
@@ -667,6 +849,7 @@ impl Runner<'_> {
             r.renderer.clear(self.options.clear_color);
             r.renderer.paint(&primitives, out.pixels_per_point);
             r.renderer.free_textures(&textures_delta);
+            textures_delta.clear();
             rasterized = Instant::now();
             present(&r.window, &r.renderer);
         }
@@ -745,8 +928,8 @@ fn present(window: &Window, renderer: &raster::Renderer) {
     let _ = (window, renderer);
 }
 
-impl ApplicationHandler<()> for Runner<'_> {
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+impl Runner<'_> {
+    fn on_new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
         if !matches!(cause, StartCause::Poll) {
             self.woke_by_timeout = matches!(cause, StartCause::ResumeTimeReached { .. });
         }
@@ -758,7 +941,7 @@ impl ApplicationHandler<()> for Runner<'_> {
         }
     }
 
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    fn on_resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.running.is_none() && self.error.is_none() {
             if let Err(e) = self.open(event_loop) {
                 self.error = Some(e);
@@ -767,14 +950,14 @@ impl ApplicationHandler<()> for Runner<'_> {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+    fn on_user_event(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(due) = self.repaint.take_due(Instant::now()) {
             self.due_taken.get_or_insert(due);
             self.queue_redraw();
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn on_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
         if self.running.is_none() {
             return;
         }
@@ -814,7 +997,7 @@ impl ApplicationHandler<()> for Runner<'_> {
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn on_about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         if let Some(due) = self.repaint.take_due(now) {
             self.due_taken.get_or_insert(due);
@@ -842,7 +1025,7 @@ impl ApplicationHandler<()> for Runner<'_> {
         }
     }
 
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+    fn on_exiting(&mut self) {
         // Before winit frees the loop's signal: no wake may reach it afterwards.
         self.repaint.waker.disable();
         if let Some(mut r) = self.running.take() {
@@ -851,11 +1034,54 @@ impl ApplicationHandler<()> for Runner<'_> {
             drop(r.gl.take());
         }
     }
+
+    /// Runs one event-loop callback. A panic in it (the program's code or a renderer) closes the
+    /// window while the loop still runs and ends the loop; `run` resumes the panic afterwards. A
+    /// panic left to unwind through winit drops the window after the loop is gone, and on AROS
+    /// that window then stays on screen after the program has ended.
+    fn guarded(&mut self, event_loop: &ActiveEventLoop, f: impl FnOnce(&mut Self, &ActiveEventLoop)) {
+        if self.panic.is_some() {
+            return;
+        }
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self, event_loop))) {
+            self.panic = Some(payload);
+            // A second panic while closing must not hide the first.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.close(event_loop)));
+            event_loop.exit();
+        }
+    }
+}
+
+impl ApplicationHandler<()> for Runner<'_> {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        self.guarded(event_loop, |r, el| r.on_new_events(el, cause));
+    }
+
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.guarded(event_loop, Self::on_resumed);
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
+        self.guarded(event_loop, Self::on_user_event);
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        self.guarded(event_loop, |r, el| r.on_window_event(el, event));
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.guarded(event_loop, Self::on_about_to_wait);
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.on_exiting();
+    }
 }
 
 /// Opens the window, runs the program until the window closes, and returns. `ctx` may be shared
 /// with the program's threads; their repaint requests wake the loop while it runs.
 pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<(), Error> {
+    log::info!("{}", system_charset().describe());
     let event_loop = EventLoop::<()>::with_user_event().build().map_err(Error::EventLoop)?;
     let repaint = Arc::new(Repaint {
         due: Mutex::new(None),
@@ -866,6 +1092,10 @@ pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<()
         let repaint = repaint.clone();
         ctx.set_request_repaint_callback(move |info| repaint.request(Instant::now() + info.delay));
     }
+    // One window: every egui viewport (deferred or immediate, such as floating panels a program
+    // shows as native windows elsewhere) is drawn inside it. egui's default is already `true`;
+    // set it anyway, since the context comes from the program.
+    ctx.set_embed_viewports(true);
     let now = Instant::now();
     let mut runner = Runner {
         options,
@@ -881,6 +1111,7 @@ pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<()
         wait_timeout: None,
         woke_by_timeout: false,
         due_taken: None,
+        panic: None,
     };
     let result = event_loop.run_app(&mut runner).map_err(Error::EventLoop);
     // Also covers a loop that ended without `exiting` (an error before the window opened).
@@ -888,7 +1119,14 @@ pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<()
     // The callback holds the repaint state; requests after this point go nowhere.
     ctx.set_request_repaint_callback(|_| {});
     let error = runner.error.take();
+    let panic = runner.panic.take();
     drop(runner);
+    // The GL context and window went with the runner.
+    #[cfg(feature = "glow")]
+    gl::close_library();
+    if let Some(payload) = panic {
+        std::panic::resume_unwind(payload);
+    }
     result?;
     error.map_or(Ok(()), Err)
 }

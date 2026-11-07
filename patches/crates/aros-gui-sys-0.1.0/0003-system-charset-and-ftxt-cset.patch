@@ -1,0 +1,1008 @@
+From: egui-aros
+Subject: [PATCH] aros-gui-sys: text in the system character set; FTXT CSET
+
+Repository: aros-development-team/AROS bf7075aab8480cf36bdc13b4382ccbd6098c8a0d,
+  tools/crosstools/rust/crates/aros-gui-sys.
+Date: 2026-11-07
+Problem: the glue documented its text as ISO 8859-1, and the winit and
+  egui-winit backends converted keys, titles and clipboard text that way. A
+  Polish keymap types ISO 8859-2 ("ąę" are 0xB1 0xEA), so egui received
+  "±ê"; Polish text pasted from other AROS programs was garbled the same way,
+  and text written to the clipboard lost every character outside ISO 8859-1.
+Rationale: AROS keeps the user's set in ENV:CHARSET (Locale preferences
+  write a codesets.library name there); keymaps and other programs' FTXT
+  CHRS use it, and AROS's own writers add no CSET chunk. TextEditor.mcc and
+  BetterString.mcc read an FTXT CSET chunk whose first long is the IANA
+  MIBenum, 106 being UTF-8. The glue now:
+  - copies that set's byte -> UCS-4 table from codesets.library
+    (aros_gui_charset_table), falling back to the library's default set and
+    then to ISO 8859-1; UTF-8 as CHARSET is reported as such;
+  - reads and writes FTXT with CSET (aros_gui_clip_read_cset/_write_cset);
+    the old two functions remain, as cset 0.
+  The crate root now builds on every target: `charset` (the codec and the
+  system set) and `clipboard` (FTXT payload rules) are plain Rust with host
+  tests; the raw bindings moved unchanged to `sys`, still AROS only.
+  Writing: text the system set holds goes out in that set without CSET, so
+  every AROS program reads it; other text goes out as UTF-8 with CSET 106
+  instead of question marks.
+Scope: no change to existing functions' behaviour; new functions only.
+Upstream-status: candidate for the AROS crate store (not submitted).
+Verification: host tests (9); C compiled with -Wall -Wextra
+  -Werror=implicit-function-declaration for x86_64 ABIv11 (GCC 10.5), x86_64
+  ABIv1 (GCC 10.5, nightly 20261105 SDK) and aarch64 (Clang); runtime: see the
+  egui-aros records.
+Removal: when the AROS crate store carries an equivalent change.
+---
+diff -ruN aros-gui-sys-0.1.0.orig/Cargo.toml aros-gui-sys-0.1.0/Cargo.toml
+--- aros-gui-sys-0.1.0.orig/Cargo.toml	2026-11-07 09:53:25
++++ aros-gui-sys-0.1.0/Cargo.toml	2026-11-07 10:05:17
+@@ -8,3 +8,6 @@
+ 
+ [build-dependencies]
+ cc = "1.2"
++
++[lints.rust]
++unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("aros"))'] }
+diff -ruN aros-gui-sys-0.1.0.orig/build.rs aros-gui-sys-0.1.0/build.rs
+--- aros-gui-sys-0.1.0.orig/build.rs	2026-11-07 09:53:25
++++ aros-gui-sys-0.1.0/build.rs	2026-11-07 09:56:05
+@@ -5,6 +5,7 @@
+     println!("cargo:rerun-if-changed=src/gl.c");
+     println!("cargo:rerun-if-changed=src/clip.c");
+     println!("cargo:rerun-if-changed=src/asl.c");
++    println!("cargo:rerun-if-changed=src/charset.c");
+     println!("cargo:rerun-if-changed=src/glue.h");
+ 
+     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("aros") {
+@@ -21,7 +22,7 @@
+     }
+ 
+     // AROS executables are relocatable objects: no PIC, which cc adds by default.
+-    build.file("src/glue.c").file("src/gl.c").file("src/clip.c").file("src/asl.c").pic(false).compile("aros_gui_glue");
++    build.file("src/glue.c").file("src/gl.c").file("src/clip.c").file("src/asl.c").file("src/charset.c").pic(false).compile("aros_gui_glue");
+ 
+     // libGL's autoinit object is only pulled in by programs that call into gl.c.
+     println!("cargo:rustc-link-lib=GL");
+diff -ruN aros-gui-sys-0.1.0.orig/src/charset.c aros-gui-sys-0.1.0/src/charset.c
+--- aros-gui-sys-0.1.0.orig/src/charset.c	1970-01-01 01:00:00
++++ aros-gui-sys-0.1.0/src/charset.c	2026-11-07 09:54:10
+@@ -0,0 +1,88 @@
++/* The system character set for Rust: the one named by ENV:CHARSET (Locale
++   preferences), as codesets.library defines it. Contract: glue.h.
++
++   The table is copied out while the library is open; nothing of the library
++   is kept, so programs that never ask do not open it. */
++#include <stdint.h>
++#include <string.h>
++#include <dos/var.h>
++#include <libraries/codesets.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
++#include <proto/codesets.h>
++
++#include "glue.h"
++
++/* ASCII case-insensitive comparison: charset names are ASCII. */
++static int same_name(const char *a, const char *b)
++{
++    for (;; a++, b++) {
++        char x = (*a >= 'a' && *a <= 'z') ? *a - 32 : *a;
++        char y = (*b >= 'a' && *b <= 'z') ? *b - 32 : *b;
++
++        if (x != y)
++            return 0;
++        if (!x)
++            return 1;
++    }
++}
++
++static int is_utf8_name(const char *name)
++{
++    return same_name(name, "UTF-8") || same_name(name, "UTF8");
++}
++
++static void copy_name(char *out, int32_t cap, const char *name)
++{
++    size_t len;
++
++    if (cap <= 0)
++        return;
++    len = name ? strlen(name) : 0;
++    if (len >= (size_t)cap)
++        len = cap - 1;
++    if (len)
++        memcpy(out, name, len);
++    out[len] = '\0';
++}
++
++int aros_gui_charset_table(uint32_t table[256], char *name, int32_t cap, uint32_t *mib)
++{
++    /* Same name as the library base the proto/ macros use, so the calls go
++       through this opening only. */
++    struct Library *CodesetsBase;
++    struct codeset *cs = NULL;
++    char wanted[64];
++    LONG got;
++    int i, rc = AROS_GUI_CHARSET_NONE;
++
++    *mib = 0;
++    copy_name(name, cap, NULL);
++    got = GetVar((CONST_STRPTR)"CHARSET", (STRPTR)wanted, sizeof(wanted), GVF_GLOBAL_ONLY);
++    if (got > 0 && is_utf8_name(wanted)) {
++        copy_name(name, cap, wanted);
++        *mib = 106;
++        return AROS_GUI_CHARSET_UTF8;
++    }
++
++    CodesetsBase = OpenLibrary((CONST_STRPTR)CODESETSNAME, 6);
++    if (!CodesetsBase)
++        return AROS_GUI_CHARSET_NONE;
++
++    if (got > 0) {
++        struct TagItem tags[] = { { CSA_FallbackToDefault, FALSE }, { TAG_DONE, 0 } };
++        cs = CodesetsFindA((CONST_STRPTR)wanted, tags);
++    }
++    /* No CHARSET, or a name codesets.library does not know: its default. */
++    if (!cs)
++        cs = CodesetsFindA(NULL, NULL);
++    if (cs) {
++        for (i = 0; i < 256; i++)
++            table[i] = cs->table[i].ucs4;
++        copy_name(name, cap, cs->name);
++        *mib = cs->MIBenum;
++        rc = (got > 0 && cs->name && same_name(wanted, cs->name)) ? AROS_GUI_CHARSET_LOCALE : AROS_GUI_CHARSET_DEFAULT;
++    }
++    CloseLibrary(CodesetsBase);
++    return rc;
++}
+diff -ruN aros-gui-sys-0.1.0.orig/src/charset.rs aros-gui-sys-0.1.0/src/charset.rs
+--- aros-gui-sys-0.1.0.orig/src/charset.rs	1970-01-01 01:00:00
++++ aros-gui-sys-0.1.0/src/charset.rs	2026-11-07 09:57:42
+@@ -0,0 +1,271 @@
++//! The system character set: what keymaps type, what Intuition draws in titles and gadgets and
++//! what other programs put on the clipboard without saying otherwise.
++//!
++//! AROS has no system-wide encoding API. Locale preferences store the user's choice in
++//! `ENV:CHARSET` as a codesets.library name ("ISO-8859-2", "Amiga-1251", "UTF-8"); keymaps
++//! for the language produce bytes in that set. [`system`] reads that set's byte table from
++//! codesets.library once; without the library (or the variable naming an unknown set) it
++//! uses the library's default set, and failing that ISO 8859-1, the set the glue documented
++//! before. [`Charset::source`] says which.
++
++use std::collections::HashMap;
++use std::sync::OnceLock;
++
++/// Where the set in use came from.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Source {
++    /// The set ENV:CHARSET names, from codesets.library.
++    Locale,
++    /// ENV:CHARSET unset or unknown: codesets.library's default set.
++    LibraryDefault,
++    /// ENV:CHARSET names UTF-8.
++    Utf8,
++    /// No codesets.library (or no set in it): ISO 8859-1.
++    Fallback,
++}
++
++/// A single-byte character set, or UTF-8.
++#[derive(Clone, Debug)]
++pub struct Charset {
++    name: String,
++    mib: u32,
++    source: Source,
++    /// Byte -> character; `None` for UTF-8.
++    table: Option<[char; 256]>,
++    reverse: HashMap<char, u8>,
++}
++
++/// IANA MIBenum of UTF-8, as FTXT CSET chunks carry it.
++pub const MIB_UTF8: u32 = 106;
++/// IANA MIBenum of ISO 8859-1.
++pub const MIB_LATIN1: u32 = 4;
++
++impl Charset {
++    /// ISO 8859-1: every byte is the character with the same number.
++    pub fn latin1() -> Self {
++        let mut table = ['\0'; 256];
++        for (i, c) in table.iter_mut().enumerate() {
++            *c = char::from(i as u8);
++        }
++        Self::from_table("ISO-8859-1", MIB_LATIN1, Source::Fallback, table)
++    }
++
++    /// UTF-8 as the system set.
++    pub fn utf8(name: &str) -> Self {
++        Self { name: name.to_owned(), mib: MIB_UTF8, source: Source::Utf8, table: None, reverse: HashMap::new() }
++    }
++
++    /// A single-byte set from its byte -> character table. Where two bytes give the same
++    /// character the lower byte is used to write it.
++    pub fn from_table(name: &str, mib: u32, source: Source, table: [char; 256]) -> Self {
++        let mut reverse = HashMap::with_capacity(256);
++        for (byte, &c) in table.iter().enumerate().rev() {
++            reverse.insert(c, byte as u8);
++        }
++        Self { name: name.to_owned(), mib, source, table: Some(table), reverse }
++    }
++
++    /// A table as codesets.library gives it (UCS-4 values); a value that is not a character
++    /// (a surrogate or above U+10FFFF) becomes U+FFFD.
++    pub fn from_ucs4(name: &str, mib: u32, source: Source, ucs4: &[u32; 256]) -> Self {
++        let mut table = ['\u{FFFD}'; 256];
++        for (c, &u) in table.iter_mut().zip(ucs4) {
++            *c = char::from_u32(u).unwrap_or('\u{FFFD}');
++        }
++        Self::from_table(name, mib, source, table)
++    }
++
++    pub fn name(&self) -> &str {
++        &self.name
++    }
++
++    /// IANA MIBenum (0 when codesets.library did not give one).
++    pub fn mib(&self) -> u32 {
++        self.mib
++    }
++
++    pub fn source(&self) -> Source {
++        self.source
++    }
++
++    pub fn is_utf8(&self) -> bool {
++        self.table.is_none()
++    }
++
++    /// Text from bytes in this set (UTF-8: invalid sequences become U+FFFD).
++    pub fn decode(&self, bytes: &[u8]) -> String {
++        match &self.table {
++            Some(table) => bytes.iter().map(|&b| table[b as usize]).collect(),
++            None => String::from_utf8_lossy(bytes).into_owned(),
++        }
++    }
++
++    /// Bytes in this set, and whether every character could be written; one that cannot is
++    /// written as `?`.
++    pub fn encode(&self, text: &str) -> (Vec<u8>, bool) {
++        if self.table.is_none() {
++            return (text.as_bytes().to_vec(), true);
++        }
++        let mut lossless = true;
++        let bytes = text
++            .chars()
++            .map(|c| {
++                self.reverse.get(&c).copied().unwrap_or_else(|| {
++                    lossless = false;
++                    b'?'
++                })
++            })
++            .collect();
++        (bytes, lossless)
++    }
++
++    /// Bytes for text the system draws (window titles, requester texts): a character the set
++    /// lacks gets a plain equivalent if it has one (dashes, quotes, bullets, the ellipsis),
++    /// else `?`; NUL characters are left out.
++    pub fn encode_display(&self, text: &str) -> Vec<u8> {
++        let mut out = Vec::with_capacity(text.len());
++        let mut buf = [0u8; 4];
++        for c in text.chars() {
++            if c == '\0' {
++                continue;
++            }
++            if self.table.is_none() {
++                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
++            } else if let Some(&b) = self.reverse.get(&c) {
++                out.push(b);
++            } else {
++                match u32::from(c) {
++                    0x2010..=0x2015 | 0x2212 => out.push(b'-'),
++                    0x2018 | 0x2019 | 0x201a => out.push(b'\''),
++                    0x201c | 0x201d | 0x201e => out.push(b'"'),
++                    0x2022 | 0x25cf => out.push(b'*'),
++                    0x2026 => out.extend_from_slice(b"..."),
++                    _ => out.push(b'?'),
++                }
++            }
++        }
++        out
++    }
++
++    /// Whether every character of `text` can be written in this set.
++    pub fn can_encode(&self, text: &str) -> bool {
++        self.table.is_none() || text.chars().all(|c| self.reverse.contains_key(&c))
++    }
++
++    /// One line for logs.
++    pub fn describe(&self) -> String {
++        let from = match self.source {
++            Source::Locale => "ENV:CHARSET",
++            Source::LibraryDefault => "codesets.library default",
++            Source::Utf8 => "ENV:CHARSET (UTF-8)",
++            Source::Fallback => "built-in fallback",
++        };
++        format!("system character set {} (MIB {}, from {from})", self.name, self.mib)
++    }
++}
++
++static SYSTEM: OnceLock<Charset> = OnceLock::new();
++
++/// The system character set, read once per program.
++pub fn system() -> &'static Charset {
++    SYSTEM.get_or_init(read_system)
++}
++
++#[cfg(target_os = "aros")]
++fn read_system() -> Charset {
++    let mut table = [0u32; 256];
++    let mut name = [0u8; 64];
++    let mut mib = 0u32;
++    // SAFETY: the buffers are as large as the lengths passed; the glue copies and closes the
++    // library before it returns.
++    let rc = unsafe {
++        crate::sys::aros_gui_charset_table(table.as_mut_ptr(), name.as_mut_ptr().cast(), name.len() as i32, &mut mib)
++    };
++    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
++    let name = String::from_utf8_lossy(&name[..end]).into_owned();
++    match rc {
++        1 => Charset::from_ucs4(&name, mib, Source::Locale, &table),
++        2 => Charset::from_ucs4(&name, mib, Source::LibraryDefault, &table),
++        3 => Charset::utf8(&name),
++        _ => Charset::latin1(),
++    }
++}
++
++#[cfg(not(target_os = "aros"))]
++fn read_system() -> Charset {
++    Charset::latin1()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// ISO 8859-2's upper half for the Polish letters (the rest as ISO 8859-1 here).
++    fn latin2() -> Charset {
++        let mut table = [0u32; 256];
++        for (i, v) in table.iter_mut().enumerate() {
++            *v = i as u32;
++        }
++        for (b, c) in [
++            (0xA1, 'Ą'), (0xB1, 'ą'), (0xC6, 'Ć'), (0xE6, 'ć'), (0xCA, 'Ę'), (0xEA, 'ę'), (0xA3, 'Ł'), (0xB3, 'ł'),
++            (0xD1, 'Ń'), (0xF1, 'ń'), (0xD3, 'Ó'), (0xF3, 'ó'), (0xA6, 'Ś'), (0xB6, 'ś'), (0xAC, 'Ź'), (0xBC, 'ź'),
++            (0xAF, 'Ż'), (0xBF, 'ż'),
++        ] {
++            table[b] = u32::from(c);
++        }
++        Charset::from_ucs4("ISO-8859-2", 5, Source::Locale, &table)
++    }
++
++    #[test]
++    fn polish_round_trip_in_latin2() {
++        let cs = latin2();
++        let text = "Zażółć gęślą jaźń ĄĆĘŁŃÓŚŹŻ ąćęłńóśźż";
++        let (bytes, lossless) = cs.encode(text);
++        assert!(lossless);
++        assert_eq!(bytes.len(), text.chars().count(), "one byte per character");
++        assert_eq!(cs.decode(&bytes), text);
++        // The bytes a Polish keymap types for "ąę" decode to those letters, not "±ê".
++        assert_eq!(cs.decode(&[0xB1, 0xEA]), "ąę");
++    }
++
++    #[test]
++    fn unrepresentable_characters_are_reported() {
++        let cs = latin2();
++        let (bytes, lossless) = cs.encode("aΩ—é");
++        assert!(!lossless);
++        assert_eq!(bytes, b"a??\xe9");
++        assert!(!cs.can_encode("Ω"));
++        assert!(cs.can_encode("żółw"));
++    }
++
++    #[test]
++    fn latin1_is_identity_and_utf8_passes_through() {
++        let l1 = Charset::latin1();
++        let all: Vec<u8> = (0..=255).collect();
++        assert_eq!(l1.encode(&l1.decode(&all)), (all, true));
++        let u = Charset::utf8("UTF-8");
++        assert!(u.is_utf8());
++        assert_eq!(u.decode("Ωż".as_bytes()), "Ωż");
++        assert_eq!(u.decode(&[0x61, 0xff]), "a\u{FFFD}");
++        assert_eq!(u.encode("Ωż"), ("Ωż".as_bytes().to_vec(), true));
++    }
++
++    #[test]
++    fn display_text_uses_plain_punctuation() {
++        let cs = latin2();
++        assert_eq!(cs.encode_display("plik — WordCraft • zażółć…\0"), b"plik - WordCraft * za\xbf\xf3\xb3\xe6...");
++        assert_eq!(cs.encode_display("Ω"), b"?");
++        assert_eq!(Charset::utf8("UTF-8").encode_display("a—\0b"), "a—b".as_bytes());
++    }
++
++    #[test]
++    fn invalid_table_values_become_replacement() {
++        let mut t = [0x41u32; 256];
++        t[1] = 0xD800;
++        t[2] = 0x110000;
++        let cs = Charset::from_ucs4("x", 0, Source::Locale, &t);
++        assert_eq!(cs.decode(&[1, 2, 3]), "\u{FFFD}\u{FFFD}A");
++        // Duplicates write the lowest byte.
++        assert_eq!(cs.encode("A").0, vec![0]);
++    }
++}
+diff -ruN aros-gui-sys-0.1.0.orig/src/clip.c aros-gui-sys-0.1.0/src/clip.c
+--- aros-gui-sys-0.1.0.orig/src/clip.c	2026-11-07 09:53:25
++++ aros-gui-sys-0.1.0/src/clip.c	2026-11-07 09:54:33
+@@ -9,11 +9,15 @@
+ #include <libraries/iffparse.h>
+ #include <proto/exec.h>
+ #include <proto/iffparse.h>
++#include <aros/macros.h>
+ 
+ #include "glue.h"
+ 
+ #define ID_FTXT MAKE_ID('F', 'T', 'X', 'T')
+ #define ID_CHRS MAKE_ID('C', 'H', 'R', 'S')
++/* FTXT CSET: the text's character set as an IANA MIBenum in the first long
++   (MorphOS; TextEditor.mcc and BetterString.mcc read it), 32 bytes in all. */
++#define ID_CSET MAKE_ID('C', 'S', 'E', 'T')
+ 
+ static struct IFFHandle *open_clip(LONG mode)
+ {
+@@ -41,13 +45,31 @@
+ 
+ int aros_gui_clip_write(const uint8_t *text, int32_t len)
+ {
+-    struct IFFHandle *iff = open_clip(IFFF_WRITE);
++    return aros_gui_clip_write_cset(text, len, 0);
++}
++
++int aros_gui_clip_write_cset(const uint8_t *text, int32_t len, uint32_t cset)
++{
++    struct IFFHandle *iff;
+     int rc = -1;
+ 
++    if (len < 0)
++        return -1;
++    iff = open_clip(IFFF_WRITE);
+     if (!iff)
+         return -1;
+     if (PushChunk(iff, ID_FTXT, ID_FORM, IFFSIZE_UNKNOWN) == 0) {
+-        if (PushChunk(iff, 0, ID_CHRS, IFFSIZE_UNKNOWN) == 0) {
++        int ok = 1;
++
++        if (cset) {
++            ULONG chunk[8] = { 0 };
++
++            chunk[0] = AROS_LONG2BE(cset);
++            ok = PushChunk(iff, 0, ID_CSET, sizeof(chunk)) == 0
++                && WriteChunkBytes(iff, chunk, sizeof(chunk)) == sizeof(chunk)
++                && PopChunk(iff) == 0;
++        }
++        if (ok && PushChunk(iff, 0, ID_CHRS, IFFSIZE_UNKNOWN) == 0) {
+             if (WriteChunkBytes(iff, (APTR)text, len) == len)
+                 rc = 0;
+             PopChunk(iff);
+@@ -60,16 +82,24 @@
+ 
+ uint8_t *aros_gui_clip_read(int32_t *len)
+ {
++    uint32_t cset;
++
++    return aros_gui_clip_read_cset(len, &cset);
++}
++
++uint8_t *aros_gui_clip_read_cset(int32_t *len, uint32_t *cset)
++{
+     struct IFFHandle *iff = open_clip(IFFF_READ);
+     UBYTE *text = NULL;
+     ULONG size = 0;
+ 
+     *len = 0;
++    *cset = 0;
+     if (!iff)
+         return NULL;
+ 
+-    /* Every CHRS chunk of every FTXT, in order. */
+-    if (StopChunk(iff, ID_FTXT, ID_CHRS) == 0) {
++    /* Every CHRS chunk of every FTXT, in order; the last CSET before them. */
++    if (StopChunk(iff, ID_FTXT, ID_CHRS) == 0 && StopChunk(iff, ID_FTXT, ID_CSET) == 0) {
+         while (ParseIFF(iff, IFFPARSE_SCAN) == 0) {
+             struct ContextNode *cn = CurrentChunk(iff);
+             UBYTE *more;
+@@ -77,6 +107,16 @@
+ 
+             if (!cn || cn->cn_Size <= 0)
+                 continue;
++            if (cn->cn_ID == ID_CSET) {
++                ULONG id;
++
++                if (cn->cn_Size >= 4 && ReadChunkBytes(iff, &id, 4) == 4)
++                    *cset = AROS_BE2LONG(id);
++                continue;
++            }
++            /* A size the next allocation cannot hold ends the text here. */
++            if ((ULONG)cn->cn_Size > 0x7fffffffUL - size)
++                break;
+             more = AllocVec(size + cn->cn_Size, MEMF_ANY);
+             if (!more)
+                 break;
+diff -ruN aros-gui-sys-0.1.0.orig/src/clipboard.rs aros-gui-sys-0.1.0/src/clipboard.rs
+--- aros-gui-sys-0.1.0.orig/src/clipboard.rs	1970-01-01 01:00:00
++++ aros-gui-sys-0.1.0/src/clipboard.rs	2026-11-07 09:55:55
+@@ -0,0 +1,114 @@
++//! Text on clipboard unit 0 (IFF FTXT), in the encoding other AROS programs use.
++//!
++//! The contract read from AROS's own clipboard code (Zune string and text classes, ConClip,
++//! TextEditor.mcc, BetterString.mcc): CHRS holds bytes in the system character set
++//! ([`crate::charset::system`]); an optional CSET chunk before it names another set by its IANA
++//! MIBenum, and TextEditor and BetterString read CSET 106 as UTF-8. AROS's own writers put no
++//! CSET.
++//!
++//! Writing follows that: text the system set can hold is written in it with no CSET, so every
++//! AROS program reads it; other text (Greek in a Polish setup, emoji) is written as UTF-8 with
++//! CSET 106 rather than with question marks, so programs that honour CSET (this crate's
++//! readers among them) get it whole.
++
++use crate::charset::{Charset, MIB_LATIN1, MIB_UTF8};
++
++/// Text from a CHRS payload and the CSET found before it (0: none).
++pub fn decode_ftxt(bytes: &[u8], cset: u32, system: &Charset) -> String {
++    match cset {
++        MIB_UTF8 => String::from_utf8_lossy(bytes).into_owned(),
++        MIB_LATIN1 if system.mib() != MIB_LATIN1 => Charset::latin1().decode(bytes),
++        // No CSET, the system's own, or one this crate has no table for: the system set,
++        // which is what AROS programs write.
++        _ => system.decode(bytes),
++    }
++}
++
++/// The CHRS payload and the CSET to write before it (0: none) for `text`.
++pub fn encode_ftxt(text: &str, system: &Charset) -> (Vec<u8>, u32) {
++    if system.is_utf8() {
++        return (text.as_bytes().to_vec(), MIB_UTF8);
++    }
++    let (bytes, lossless) = system.encode(text);
++    if lossless { (bytes, 0) } else { (text.as_bytes().to_vec(), MIB_UTF8) }
++}
++
++/// The clipboard's text, or `None` when it holds no FTXT text (empty, a picture, unreadable).
++#[cfg(target_os = "aros")]
++pub fn read_text() -> Option<String> {
++    let (mut len, mut cset) = (0i32, 0u32);
++    // SAFETY: out-parameters; the buffer is freed below with the glue's own function.
++    let text = unsafe { crate::sys::aros_gui_clip_read_cset(&mut len, &mut cset) };
++    if text.is_null() {
++        return None;
++    }
++    // SAFETY: the glue returns `len` readable bytes at `text`.
++    let bytes = unsafe { std::slice::from_raw_parts(text, len.max(0) as usize) };
++    let out = decode_ftxt(bytes, cset, crate::charset::system());
++    // SAFETY: allocated by aros_gui_clip_read_cset, not used after this.
++    unsafe { crate::sys::aros_gui_clip_free(text) };
++    Some(out)
++}
++
++/// Writes `text` to the clipboard; `false` if it could not be written.
++#[cfg(target_os = "aros")]
++pub fn write_text(text: &str) -> bool {
++    let (bytes, cset) = encode_ftxt(text, crate::charset::system());
++    let Ok(len) = i32::try_from(bytes.len()) else { return false };
++    // SAFETY: `bytes` holds `len` bytes for the duration of the call.
++    unsafe { crate::sys::aros_gui_clip_write_cset(bytes.as_ptr(), len, cset) == 0 }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::charset::Source;
++
++    fn latin2() -> Charset {
++        let mut t = [0u32; 256];
++        for (i, v) in t.iter_mut().enumerate() {
++            *v = i as u32;
++        }
++        for (b, c) in [(0xB1, 'ą'), (0xEA, 'ę'), (0xBF, 'ż'), (0xF3, 'ó'), (0xB3, 'ł'), (0xE6, 'ć')] {
++            t[b] = u32::from(c);
++        }
++        Charset::from_ucs4("ISO-8859-2", 5, Source::Locale, &t)
++    }
++
++    #[test]
++    fn system_text_is_written_without_cset() {
++        let cs = latin2();
++        let (bytes, cset) = encode_ftxt("żółć ąę", &cs);
++        assert_eq!(cset, 0);
++        assert_eq!(bytes, b"\xbf\xf3\xb3\xe6 \xb1\xea");
++        assert_eq!(decode_ftxt(&bytes, cset, &cs), "żółć ąę");
++    }
++
++    #[test]
++    fn other_text_is_utf8_with_cset_and_reads_back() {
++        let cs = latin2();
++        let text = "ż Ωμέγα — e\u{301} 日本";
++        let (bytes, cset) = encode_ftxt(text, &cs);
++        assert_eq!(cset, MIB_UTF8);
++        assert_eq!(bytes, text.as_bytes());
++        assert_eq!(decode_ftxt(&bytes, cset, &cs), text);
++    }
++
++    #[test]
++    fn foreign_csets() {
++        let cs = latin2();
++        // Latin-1 named explicitly is read as Latin-1, not as the system set.
++        assert_eq!(decode_ftxt(b"\xb1", MIB_LATIN1, &cs), "±");
++        assert_eq!(decode_ftxt(b"\xb1", 0, &cs), "ą");
++        // Bad UTF-8 under CSET 106 does not fail.
++        assert_eq!(decode_ftxt(b"a\xff", MIB_UTF8, &cs), "a\u{FFFD}");
++        // An unknown set falls back to the system set.
++        assert_eq!(decode_ftxt(b"\xb1", 2250, &cs), "ą");
++    }
++
++    #[test]
++    fn utf8_system_always_marks_cset() {
++        let u = Charset::utf8("UTF-8");
++        assert_eq!(encode_ftxt("ab", &u), (b"ab".to_vec(), MIB_UTF8));
++    }
++}
+diff -ruN aros-gui-sys-0.1.0.orig/src/glue.h aros-gui-sys-0.1.0/src/glue.h
+--- aros-gui-sys-0.1.0.orig/src/glue.h	2026-11-07 09:53:25
++++ aros-gui-sys-0.1.0/src/glue.h	2026-11-07 09:54:33
+@@ -110,6 +110,24 @@
+ void aros_gui_gl_set_window(uintptr_t ctx, uintptr_t window);
+ void *aros_gui_gl_proc(const char *name);
+ 
++/* Clipboard text with its FTXT CSET (an IANA MIBenum, 0: none). Reading
++   returns the last CSET found before the text; writing puts a CSET chunk
++   before CHRS when `cset` is not 0. The plain functions are cset 0. */
++uint8_t *aros_gui_clip_read_cset(int32_t *len, uint32_t *cset);
++int aros_gui_clip_write_cset(const uint8_t *text, int32_t len, uint32_t cset);
++
++/* The system character set: copies codesets.library's byte -> UCS-4 table of
++   the set ENV:CHARSET names (Locale preferences) into `table`, its name into
++   `name` and its IANA MIBenum into `mib`. Returns AROS_GUI_CHARSET_LOCALE
++   for that set, _DEFAULT when CHARSET is unset or unknown and the library's
++   default was used, _UTF8 when CHARSET names UTF-8 (no table), _NONE when
++   codesets.library cannot be opened or has no set (table untouched). */
++#define AROS_GUI_CHARSET_NONE    0
++#define AROS_GUI_CHARSET_LOCALE  1
++#define AROS_GUI_CHARSET_DEFAULT 2
++#define AROS_GUI_CHARSET_UTF8    3
++int aros_gui_charset_table(uint32_t table[256], char *name, int32_t cap, uint32_t *mib);
++
+ /* An ASL file requester; flags AROS_GUI_FR_*. Returns the chosen path, to free
+    with aros_gui_string_free, or NULL when cancelled. `window` may be 0. */
+ #define AROS_GUI_FR_SAVE    1
+diff -ruN aros-gui-sys-0.1.0.orig/src/lib.rs aros-gui-sys-0.1.0/src/lib.rs
+--- aros-gui-sys-0.1.0.orig/src/lib.rs	2026-11-07 09:53:25
++++ aros-gui-sys-0.1.0/src/lib.rs	2026-11-07 09:54:59
+@@ -1,158 +1,14 @@
+ //! Raw bindings to the C glue for Intuition windows, input and signals on
+ //! AROS. The C half is `glue.c`; keep the structures in step with `glue.h`.
+ //!
+-//! Empty on every other target.
+-#![cfg(target_os = "aros")]
+-#![allow(non_camel_case_types)]
++//! The bindings are empty on every other target; [`charset`] and [`clipboard`]
++//! hold the text conversions every AROS frontend (keys, titles, clipboard)
++//! shares, testable on any host.
+ 
+-use std::ffi::{c_char, c_int, c_void};
++#[cfg(target_os = "aros")]
++mod sys;
++#[cfg(target_os = "aros")]
++pub use sys::*;
+ 
+-pub const AROS_GUI_WINDOW_RESIZABLE: u32 = 1 << 0;
+-pub const AROS_GUI_WINDOW_BORDERLESS: u32 = 1 << 1;
+-pub const AROS_GUI_WINDOW_ACTIVATE: u32 = 1 << 2;
+-
+-pub const AROS_GUI_FR_SAVE: c_int = 1;
+-pub const AROS_GUI_FR_DRAWERS: c_int = 2;
+-
+-// IDCMP classes, intuition/intuition.h.
+-pub const IDCMP_NEWSIZE: u32 = 1 << 1;
+-pub const IDCMP_MOUSEBUTTONS: u32 = 1 << 3;
+-pub const IDCMP_MOUSEMOVE: u32 = 1 << 4;
+-pub const IDCMP_DELTAMOVE: u32 = 1 << 20;
+-pub const IDCMP_CLOSEWINDOW: u32 = 1 << 9;
+-pub const IDCMP_RAWKEY: u32 = 1 << 10;
+-pub const IDCMP_ACTIVEWINDOW: u32 = 1 << 18;
+-pub const IDCMP_INACTIVEWINDOW: u32 = 1 << 19;
+-pub const IDCMP_CHANGEWINDOW: u32 = 1 << 25;
+-
+-// Input event codes and qualifiers, devices/inputevent.h.
+-pub const IECODE_UP_PREFIX: u16 = 0x80;
+-pub const IECODE_LBUTTON: u16 = 0x68;
+-pub const IECODE_RBUTTON: u16 = 0x69;
+-pub const IECODE_MBUTTON: u16 = 0x6A;
+-
+-pub const IEQUALIFIER_LSHIFT: u16 = 1 << 0;
+-pub const IEQUALIFIER_RSHIFT: u16 = 1 << 1;
+-pub const IEQUALIFIER_CAPSLOCK: u16 = 1 << 2;
+-pub const IEQUALIFIER_CONTROL: u16 = 1 << 3;
+-pub const IEQUALIFIER_LALT: u16 = 1 << 4;
+-pub const IEQUALIFIER_RALT: u16 = 1 << 5;
+-pub const IEQUALIFIER_LCOMMAND: u16 = 1 << 6;
+-pub const IEQUALIFIER_RCOMMAND: u16 = 1 << 7;
+-pub const IEQUALIFIER_NUMERICPAD: u16 = 1 << 8;
+-pub const IEQUALIFIER_REPEAT: u16 = 1 << 9;
+-
+-#[repr(C)]
+-#[derive(Clone, Copy, Debug)]
+-pub struct aros_gui_window_attrs {
+-    pub left: i32,
+-    pub top: i32,
+-    pub inner_width: i32,
+-    pub inner_height: i32,
+-    pub min_width: i32,
+-    pub min_height: i32,
+-    pub flags: u32,
+-    pub title: *const c_char,
+-}
+-
+-#[repr(C)]
+-#[derive(Clone, Copy, Debug, Default)]
+-pub struct aros_gui_window_info {
+-    pub handle: usize,
+-    pub left: i32,
+-    pub top: i32,
+-    pub width: i32,
+-    pub height: i32,
+-    pub inner_width: i32,
+-    pub inner_height: i32,
+-    pub border_left: i32,
+-    pub border_top: i32,
+-    pub sigmask: u32,
+-}
+-
+-#[repr(C)]
+-#[derive(Clone, Copy, Debug, Default)]
+-pub struct aros_gui_message {
+-    pub class: u32,
+-    pub code: u16,
+-    pub qualifier: u16,
+-    pub mouse_x: i32,
+-    pub mouse_y: i32,
+-}
+-
+-extern "C" {
+-    pub fn aros_gui_screen_size(width: *mut i32, height: *mut i32) -> c_int;
+-    pub fn aros_gui_screen_palette(rgb: *mut u32, count: c_int) -> c_int;
+-
+-    pub fn aros_gui_window_open(
+-        attrs: *const aros_gui_window_attrs,
+-        out: *mut aros_gui_window_info,
+-    ) -> c_int;
+-    pub fn aros_gui_window_close(window: usize);
+-    pub fn aros_gui_window_info(window: usize, out: *mut aros_gui_window_info);
+-    pub fn aros_gui_window_set_title(window: usize, title: *const c_char) -> c_int;
+-    pub fn aros_gui_window_set_inner_size(window: usize, width: i32, height: i32);
+-    pub fn aros_gui_window_set_position(window: usize, left: i32, top: i32);
+-    pub fn aros_gui_window_set_min_size(window: usize, width: i32, height: i32);
+-    pub fn aros_gui_window_set_pointer_visible(window: usize, visible: c_int);
+-    pub fn aros_gui_window_focus(window: usize);
+-    pub fn aros_gui_window_is_active(window: usize) -> c_int;
+-    pub fn aros_gui_window_next_message(window: usize, out: *mut aros_gui_message) -> c_int;
+-    pub fn aros_gui_window_set_delta_move(window: usize, on: c_int);
+-    pub fn aros_gui_window_delta_move(window: usize) -> c_int;
+-
+-    pub fn aros_gui_last_message_time(seconds: *mut u32, micros: *mut u32);
+-    pub fn aros_gui_system_time(seconds: *mut u32, micros: *mut u32);
+-    pub fn aros_gui_last_message_qualifier() -> u16;
+-
+-    pub fn aros_gui_map_rawkey(code: u16, qualifier: u16, buf: *mut c_char, len: c_int) -> c_int;
+-
+-    pub fn aros_gui_task_self() -> *mut c_void;
+-    pub fn aros_gui_signal_alloc() -> c_int;
+-    pub fn aros_gui_signal_free(bit: c_int);
+-    pub fn aros_gui_signal_send(task: *mut c_void, mask: u32);
+-    pub fn aros_gui_wait(mask: u32, timeout_us: i64, timed_out: *mut c_int) -> u32;
+-    pub fn aros_gui_wait_cleanup();
+-
+-    pub fn aros_gui_clip_write(text: *const u8, len: i32) -> c_int;
+-    pub fn aros_gui_clip_read(len: *mut i32) -> *mut u8;
+-    pub fn aros_gui_clip_free(text: *mut u8);
+-
+-    pub fn aros_gui_file_request(
+-        window: usize,
+-        title: *const c_char,
+-        drawer: *const c_char,
+-        file: *const c_char,
+-        pattern: *const c_char,
+-        flags: c_int,
+-    ) -> *mut c_char;
+-    pub fn aros_gui_message(
+-        window: usize,
+-        title: *const c_char,
+-        text: *const c_char,
+-        buttons: *const c_char,
+-    ) -> c_int;
+-    pub fn aros_gui_string_free(text: *mut c_char);
+-
+-    /// Opens gl.library (0: it could not be opened). Needed before any other `aros_gui_gl_`
+-    /// call; libGL's autoinit is not linked, so nothing opens it at program start.
+-    pub fn aros_gui_gl_open() -> c_int;
+-    /// Closes gl.library after the last context has been destroyed.
+-    pub fn aros_gui_gl_close();
+-    pub fn aros_gui_gl_create(window: usize, alpha: c_int, depth: c_int, stencil: c_int) -> usize;
+-    pub fn aros_gui_gl_create_profile(
+-        window: usize,
+-        alpha: c_int,
+-        depth: c_int,
+-        stencil: c_int,
+-        core: c_int,
+-        major: c_int,
+-        minor: c_int,
+-    ) -> usize;
+-    pub fn aros_gui_gl_destroy(ctx: usize);
+-    pub fn aros_gui_gl_make_current(ctx: usize);
+-    pub fn aros_gui_gl_current() -> usize;
+-    pub fn aros_gui_gl_swap_buffers(ctx: usize);
+-    pub fn aros_gui_gl_set_window(ctx: usize, window: usize);
+-    pub fn aros_gui_gl_proc(name: *const c_char) -> *const c_void;
+-}
++pub mod charset;
++pub mod clipboard;
+diff -ruN aros-gui-sys-0.1.0.orig/src/sys.rs aros-gui-sys-0.1.0/src/sys.rs
+--- aros-gui-sys-0.1.0.orig/src/sys.rs	1970-01-01 01:00:00
++++ aros-gui-sys-0.1.0/src/sys.rs	2026-11-07 09:54:59
+@@ -0,0 +1,158 @@
++//! The raw bindings (AROS only); re-exported by the crate root.
++#![allow(non_camel_case_types)]
++
++use std::ffi::{c_char, c_int, c_void};
++
++pub const AROS_GUI_WINDOW_RESIZABLE: u32 = 1 << 0;
++pub const AROS_GUI_WINDOW_BORDERLESS: u32 = 1 << 1;
++pub const AROS_GUI_WINDOW_ACTIVATE: u32 = 1 << 2;
++
++pub const AROS_GUI_FR_SAVE: c_int = 1;
++pub const AROS_GUI_FR_DRAWERS: c_int = 2;
++
++// IDCMP classes, intuition/intuition.h.
++pub const IDCMP_NEWSIZE: u32 = 1 << 1;
++pub const IDCMP_MOUSEBUTTONS: u32 = 1 << 3;
++pub const IDCMP_MOUSEMOVE: u32 = 1 << 4;
++pub const IDCMP_DELTAMOVE: u32 = 1 << 20;
++pub const IDCMP_CLOSEWINDOW: u32 = 1 << 9;
++pub const IDCMP_RAWKEY: u32 = 1 << 10;
++pub const IDCMP_ACTIVEWINDOW: u32 = 1 << 18;
++pub const IDCMP_INACTIVEWINDOW: u32 = 1 << 19;
++pub const IDCMP_CHANGEWINDOW: u32 = 1 << 25;
++
++// Input event codes and qualifiers, devices/inputevent.h.
++pub const IECODE_UP_PREFIX: u16 = 0x80;
++pub const IECODE_LBUTTON: u16 = 0x68;
++pub const IECODE_RBUTTON: u16 = 0x69;
++pub const IECODE_MBUTTON: u16 = 0x6A;
++
++pub const IEQUALIFIER_LSHIFT: u16 = 1 << 0;
++pub const IEQUALIFIER_RSHIFT: u16 = 1 << 1;
++pub const IEQUALIFIER_CAPSLOCK: u16 = 1 << 2;
++pub const IEQUALIFIER_CONTROL: u16 = 1 << 3;
++pub const IEQUALIFIER_LALT: u16 = 1 << 4;
++pub const IEQUALIFIER_RALT: u16 = 1 << 5;
++pub const IEQUALIFIER_LCOMMAND: u16 = 1 << 6;
++pub const IEQUALIFIER_RCOMMAND: u16 = 1 << 7;
++pub const IEQUALIFIER_NUMERICPAD: u16 = 1 << 8;
++pub const IEQUALIFIER_REPEAT: u16 = 1 << 9;
++
++#[repr(C)]
++#[derive(Clone, Copy, Debug)]
++pub struct aros_gui_window_attrs {
++    pub left: i32,
++    pub top: i32,
++    pub inner_width: i32,
++    pub inner_height: i32,
++    pub min_width: i32,
++    pub min_height: i32,
++    pub flags: u32,
++    pub title: *const c_char,
++}
++
++#[repr(C)]
++#[derive(Clone, Copy, Debug, Default)]
++pub struct aros_gui_window_info {
++    pub handle: usize,
++    pub left: i32,
++    pub top: i32,
++    pub width: i32,
++    pub height: i32,
++    pub inner_width: i32,
++    pub inner_height: i32,
++    pub border_left: i32,
++    pub border_top: i32,
++    pub sigmask: u32,
++}
++
++#[repr(C)]
++#[derive(Clone, Copy, Debug, Default)]
++pub struct aros_gui_message {
++    pub class: u32,
++    pub code: u16,
++    pub qualifier: u16,
++    pub mouse_x: i32,
++    pub mouse_y: i32,
++}
++
++extern "C" {
++    pub fn aros_gui_screen_size(width: *mut i32, height: *mut i32) -> c_int;
++    pub fn aros_gui_screen_palette(rgb: *mut u32, count: c_int) -> c_int;
++
++    pub fn aros_gui_window_open(
++        attrs: *const aros_gui_window_attrs,
++        out: *mut aros_gui_window_info,
++    ) -> c_int;
++    pub fn aros_gui_window_close(window: usize);
++    pub fn aros_gui_window_info(window: usize, out: *mut aros_gui_window_info);
++    pub fn aros_gui_window_set_title(window: usize, title: *const c_char) -> c_int;
++    pub fn aros_gui_window_set_inner_size(window: usize, width: i32, height: i32);
++    pub fn aros_gui_window_set_position(window: usize, left: i32, top: i32);
++    pub fn aros_gui_window_set_min_size(window: usize, width: i32, height: i32);
++    pub fn aros_gui_window_set_pointer_visible(window: usize, visible: c_int);
++    pub fn aros_gui_window_focus(window: usize);
++    pub fn aros_gui_window_is_active(window: usize) -> c_int;
++    pub fn aros_gui_window_next_message(window: usize, out: *mut aros_gui_message) -> c_int;
++    pub fn aros_gui_window_set_delta_move(window: usize, on: c_int);
++    pub fn aros_gui_window_delta_move(window: usize) -> c_int;
++
++    pub fn aros_gui_last_message_time(seconds: *mut u32, micros: *mut u32);
++    pub fn aros_gui_system_time(seconds: *mut u32, micros: *mut u32);
++    pub fn aros_gui_last_message_qualifier() -> u16;
++
++    pub fn aros_gui_map_rawkey(code: u16, qualifier: u16, buf: *mut c_char, len: c_int) -> c_int;
++
++    pub fn aros_gui_task_self() -> *mut c_void;
++    pub fn aros_gui_signal_alloc() -> c_int;
++    pub fn aros_gui_signal_free(bit: c_int);
++    pub fn aros_gui_signal_send(task: *mut c_void, mask: u32);
++    pub fn aros_gui_wait(mask: u32, timeout_us: i64, timed_out: *mut c_int) -> u32;
++    pub fn aros_gui_wait_cleanup();
++
++    pub fn aros_gui_clip_write(text: *const u8, len: i32) -> c_int;
++    pub fn aros_gui_clip_read(len: *mut i32) -> *mut u8;
++    pub fn aros_gui_clip_free(text: *mut u8);
++    pub fn aros_gui_clip_read_cset(len: *mut i32, cset: *mut u32) -> *mut u8;
++    pub fn aros_gui_clip_write_cset(text: *const u8, len: i32, cset: u32) -> c_int;
++
++    pub fn aros_gui_charset_table(table: *mut u32, name: *mut c_char, cap: i32, mib: *mut u32) -> c_int;
++
++    pub fn aros_gui_file_request(
++        window: usize,
++        title: *const c_char,
++        drawer: *const c_char,
++        file: *const c_char,
++        pattern: *const c_char,
++        flags: c_int,
++    ) -> *mut c_char;
++    pub fn aros_gui_message(
++        window: usize,
++        title: *const c_char,
++        text: *const c_char,
++        buttons: *const c_char,
++    ) -> c_int;
++    pub fn aros_gui_string_free(text: *mut c_char);
++
++    /// Opens gl.library (0: it could not be opened). Needed before any other `aros_gui_gl_`
++    /// call; libGL's autoinit is not linked, so nothing opens it at program start.
++    pub fn aros_gui_gl_open() -> c_int;
++    /// Closes gl.library after the last context has been destroyed.
++    pub fn aros_gui_gl_close();
++    pub fn aros_gui_gl_create(window: usize, alpha: c_int, depth: c_int, stencil: c_int) -> usize;
++    pub fn aros_gui_gl_create_profile(
++        window: usize,
++        alpha: c_int,
++        depth: c_int,
++        stencil: c_int,
++        core: c_int,
++        major: c_int,
++        minor: c_int,
++    ) -> usize;
++    pub fn aros_gui_gl_destroy(ctx: usize);
++    pub fn aros_gui_gl_make_current(ctx: usize);
++    pub fn aros_gui_gl_current() -> usize;
++    pub fn aros_gui_gl_swap_buffers(ctx: usize);
++    pub fn aros_gui_gl_set_window(ctx: usize, window: usize);
++    pub fn aros_gui_gl_proc(name: *const c_char) -> *const c_void;
++}

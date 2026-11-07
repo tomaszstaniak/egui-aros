@@ -1,0 +1,62 @@
+From: egui-aros
+Subject: [PATCH] egui-winit (AROS): pictures from the clipboard for Cmd/Ctrl+V
+
+Crate: egui-winit 0.37.0 (storytold/egui 6d518fc7) with 0001-0003.
+Date: 2026-11-07
+Problem: with a picture and no text on the clipboard, Cmd/Ctrl+V sends
+  Event::PasteImage from Clipboard::get_image() on the desktops; on AROS that
+  function had no source, so Ctrl+V did nothing (WordCraft 0.16.0 and
+  GridCraft 0.17.0 paste pictures from that event; their menus' Paste worked
+  through the host).
+  Also get() answered a clipboard without text with the in-process copy,
+  Some("") when there was none, so the image fallback was never reached.
+Rationale: aros-gui-sys 0004 reads the clipboard's picture through
+  datatypes; get_image() converts its RGBA to a ColorImage. An unreadable
+  picture is logged and nothing is pasted, as for other platforms' errors.
+  get() returns the system clipboard's text on AROS and the in-process copy
+  only when it holds something.
+Prerequisites: aros-gui-sys 0004-clipboard-pictures.patch.
+Upstream-status: candidate for the AROS contrib crate store (not submitted).
+Verification: see the egui-aros build records.
+Removal: with 0001.
+---
+diff -ruN egui-winit-0.37.0.orig/src/clipboard.rs egui-winit-0.37.0/src/clipboard.rs
+--- egui-winit-0.37.0.orig/src/clipboard.rs	2026-11-07 13:15:32
++++ egui-winit-0.37.0/src/clipboard.rs	2026-11-07 13:30:37
+@@ -244,10 +244,11 @@
+         expect(clippy::needless_pass_by_ref_mut, clippy::unnecessary_wraps)
+     )]
+     pub fn get(&mut self) -> Option<String> {
++        // AROS: the system clipboard's text. The in-process copy only stands in when it holds
++        // something (a copy the system clipboard could not take); an empty one would turn
++        // Cmd/Ctrl+V on a picture into an empty text paste instead of Event::PasteImage.
+         #[cfg(target_os = "aros")]
+-        if let Some(text) = aros::get() {
+-            return Some(text);
+-        }
++        return aros::get().or_else(|| (!self.clipboard.is_empty()).then(|| self.clipboard.clone()));
+ 
+         #[cfg(all(
+             any(
+@@ -398,6 +399,21 @@
+         expect(clippy::needless_pass_by_ref_mut, clippy::unused_self)
+     )]
+     pub fn get_image(&mut self) -> Option<egui::ColorImage> {
++        // AROS: a picture another program put on clipboard unit 0, read through datatypes
++        // (aros-gui-sys). Cmd/Ctrl+V with no text on the clipboard then sends Event::PasteImage
++        // as on the other desktops.
++        #[cfg(target_os = "aros")]
++        return match aros_gui_sys::clipboard::read_picture() {
++            aros_gui_sys::clipboard::ClipboardImage::Pixels { width, height, rgba } => {
++                Some(egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba))
++            }
++            aros_gui_sys::clipboard::ClipboardImage::Unreadable(why) => {
++                log::warn!("AROS clipboard picture: {why}");
++                None
++            }
++            aros_gui_sys::clipboard::ClipboardImage::None => None,
++        };
++
+         #[cfg(all(
+             any(
+                 target_os = "linux",

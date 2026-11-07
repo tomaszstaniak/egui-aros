@@ -1,0 +1,41 @@
+From: egui-aros
+Subject: [PATCH] eframe: do not request glutin's EGL and WGL backends on AROS
+
+Crate: eframe 0.37.0 from storytold/egui 6d518fc799681571963842f95b55a6b68431b15a,
+  manifest made standalone by scripts/ea.py.
+Date: 2026-10-28 (rebased from the eframe 0.36.2 series of 2026-10-19)
+Problem: eframe enables glutin's and glutin-winit's `egl` and `wgl` features
+  on every non-wasm target. On AROS glutin then builds libloading for EGL,
+  which needs dlopen/dlsym that the AROS libc does not provide, and
+  glutin-winit selects an EGL display that AROS glutin does not have.
+Rationale: on AROS glutin picks its GLA backend by target, with no feature;
+  the same optional dependencies are declared for AROS without features, so
+  the `glow` feature still enables them.
+Scope: Cargo.toml target tables only.
+Upstream-status: candidate for the AROS contrib crate store (not submitted).
+Prerequisites: glutin-winit 0001-aros-gla-backend.patch.
+Verification: see the egui-aros build records (branch egui-0.37).
+Rebase: in 0.37 glutin and glutin-winit sit in the non-wasm table with
+  egui-winit and winit; they move to a table that also excludes AROS.
+Removal: when eframe or the AROS crate store expresses this differently.
+---
+diff --git a/Cargo.toml b/Cargo.toml
+index fb8f726..5c628fa 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -61,9 +61,15 @@ winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+ egui_system_font_provider = { version = "0.37.0", default-features = false, optional = true }
+ egui-wgpu = { version = "0.37.0", default-features = false, optional = true, features = ["winit", "capture"] }
+ pollster = { version = "1.0", optional = true }
++
++[target."cfg(not(any(target_arch = \"wasm32\", target_os = \"aros\")))".dependencies]
+ glutin = { version = "0.32.3", default-features = false, optional = true, features = ["egl", "wgl"] }
+ glutin-winit = { version = "0.5.0", default-features = false, optional = true, features = ["egl", "wgl"] }
+ 
++[target."cfg(target_os = \"aros\")".dependencies]
++glutin = { version = "0.32.3", default-features = false, optional = true }
++glutin-winit = { version = "0.5.0", default-features = false, optional = true }
++
+ [target."cfg(any(target_os = \"macos\"))".dependencies]
+ objc2 = { version = "0.6.4" }
+ objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSData", "NSString"] }

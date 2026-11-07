@@ -1,0 +1,19 @@
+[package]
+name = "egui-aros-clip-probe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Native checks of egui-aros' clipboard text (system character set, CSET) and pictures (datatypes read, ILBM write)"
+
+[[bin]]
+name = "clip-probe"
+path = "src/main.rs"
+
+[dependencies]
+# By version: a Craft port's build (scripts/craft.py --tool) supplies egui-aros and its patched
+# crates, for every AROS target; the probe is its own workspace so it can be built from a copy.
+egui-aros = "0.1"
+aros-gui-sys = "0.1"
+
+[workspace]

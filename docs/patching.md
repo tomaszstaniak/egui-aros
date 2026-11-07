@@ -7,6 +7,8 @@
 | `aros` | `tools/crosstools/rust/crates/aros-gui-sys`: the C glue for Intuition windows, input, signals, clipboard, ASL and GLA |
 | `contrib` | `development/rust/crates`: the AROS diffs for winit, glutin and raw-window-handle |
 | `ports` | `graphics/photocraft/photocraft-aros`: the origin of the CPU renderer |
+| `egui` | the egui 0.37.0 workspace (storytold fork of emilk/egui) the Craft programs build on |
+| `winit` | winit 0.30.13 with the Craft programs' changes (storytold fork); the AROS backend is rebased onto it |
 
 `scripts/ea.py fetch` makes clean, sparse checkouts in `upstream/<id>`; they are
 never edited. Changes to external code are patch files in this repository:
@@ -16,6 +18,14 @@ never edited. Changes to external code are patch files in this repository:
   pinned contrib checkout, applied unchanged; other entries are our patches,
   stored beside the series. `patches/crates/crates.json` names the crates, the
   checksum of each crates.io archive, or the upstream path a crate comes from.
+  A crate taken from a Git workspace (`workspace` in `crates.json`) is first made
+  standalone, as `cargo package` would: inherited fields, lints and dependencies
+  are filled in from the workspace root, path dependencies resolve through the
+  build's `[patch]` entries, and dev-dependencies, examples, tests and benches
+  are dropped. Patches apply to that manifest. `series` names the patch
+  directory when two sources share a name and version (the winit fork:
+  `winit-0.30.13-storytold`). The prepared copy's tree hash is recorded in
+  `tree_sha256`; a different result stops the build.
 - `patches/libc-aros`, `patches/aros-pthread`: changes to rust-aros's libc and to
   AROS's pthread library, applied by the build.
 - `patches/ports`: candidates for the ports repository, kept for review; the

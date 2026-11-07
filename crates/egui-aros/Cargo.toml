@@ -14,21 +14,25 @@ asl = []
 # renderer. A program built with it needs gl.library to start; without a usable context it
 # falls back to the CPU renderer.
 glow = ["dep:egui_glow", "dep:glow", "dep:glutin", "dep:glutin-winit"]
+# Test builds only: EGUI_AROS_TEST_GL_FAILURE makes the OpenGL context fail, to check
+# RendererRequest::Auto's fallback and Gpu's error where OpenGL works.
+gl-failure-test = ["glow"]
 
 [dependencies]
-egui = { version = "=0.36.2", default-features = false }
-egui-winit = { version = "=0.36.2", default-features = false, features = ["clipboard"] }
+egui = { version = "=0.37.0", default-features = false }
+egui-winit = { version = "=0.37.0", default-features = false, features = ["clipboard"] }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 raw-window-handle = "0.6.2"
 log = "0.4"
-egui_glow = { version = "=0.36.2", default-features = false, optional = true }
+egui_glow = { version = "=0.37.0", default-features = false, optional = true }
 glow = { version = "0.17", optional = true }
 glutin = { version = "=0.32.3", default-features = false, optional = true }
 glutin-winit = { version = "=0.5.0", default-features = false, optional = true }
-
-[target.'cfg(target_os = "aros")'.dependencies]
-# The message time stamps for latency (with this repository's aros-gui-sys patch).
+# The C glue (AROS only) and, on every target, the system character set and FTXT rules (with
+# this repository's aros-gui-sys patches).
 aros-gui-sys = "0.1"
+aros-startup = { version = "0.1", path = "../aros-startup" }
+
 
 [build-dependencies]
 cc = "1.2"

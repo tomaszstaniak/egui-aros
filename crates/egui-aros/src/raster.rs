@@ -145,7 +145,8 @@ impl Renderer {
         self.textures.clear();
     }
 
-    /// Frees the frame's released textures (after painting).
+    /// Frees the frame's released textures (after painting). The caller clears the delta
+    /// afterwards: egui 0.37 checks in debug builds that no delta is dropped unapplied.
     pub fn free_textures(&mut self, delta: &TexturesDelta) {
         for id in &delta.free {
             self.textures.remove(id);
@@ -416,6 +417,37 @@ fn row_span(edges: [(f32, f32); 3], sign: f32, len: i32) -> Option<(i32, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// egui 0.37 sends a texture's full image and later updates of a part of it (`pos`), possibly
+    /// several for one texture in one frame, in order; a part outside the texture is cut off.
+    #[test]
+    fn partial_texture_updates_apply_in_order() {
+        use egui::epaint::textures::TextureOptions;
+        use egui::{Color32, ColorImage};
+        let id = TextureId::Managed(7);
+        let mut renderer = Renderer::new(1, 1);
+        let mut delta = TexturesDelta::default();
+        let full = ColorImage::new([4, 3], vec![Color32::RED; 12]);
+        delta.set.entry(id).or_default().push(ImageDelta::full(full, TextureOptions::NEAREST));
+        renderer.update_textures(&delta);
+        delta.clear();
+        let mut delta = TexturesDelta::default();
+        let part = |c, w, h| ColorImage::new([w, h], vec![c; w * h]);
+        delta.set.entry(id).or_default().push(ImageDelta::partial([1, 1], part(Color32::BLUE, 2, 1), TextureOptions::NEAREST));
+        delta.set.entry(id).or_default().push(ImageDelta::partial([2, 1], part(Color32::GREEN, 1, 1), TextureOptions::NEAREST));
+        delta.set.entry(id).or_default().push(ImageDelta::partial([3, 2], part(Color32::WHITE, 3, 3), TextureOptions::NEAREST));
+        renderer.update_textures(&delta);
+        delta.clear();
+        let t = &renderer.textures[&id];
+        let at = |x: usize, y: usize| Color32::from_rgba_premultiplied(t.pixels[y * 4 + x][0], t.pixels[y * 4 + x][1], t.pixels[y * 4 + x][2], t.pixels[y * 4 + x][3]);
+        assert_eq!((t.width, t.height), (4, 3));
+        assert_eq!(at(0, 1), Color32::RED);
+        assert_eq!(at(1, 1), Color32::BLUE);
+        assert_eq!(at(2, 1), Color32::GREEN);
+        assert_eq!(at(3, 1), Color32::RED);
+        assert_eq!(at(3, 2), Color32::WHITE);
+        assert_eq!(at(2, 2), Color32::RED);
+    }
 
     /// Every pixel the full test of the old loop finds inside (edge functions accumulated from
     /// the bounding box's left edge) lies within the row's span, for many random triangles.
