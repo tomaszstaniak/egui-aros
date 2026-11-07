@@ -15,6 +15,7 @@ mod native {
         pub fn ea_startup_progdir(out: *mut c_char, cap: i32) -> i32;
         pub fn ea_startup_absolute(name: *const c_char, out: *mut c_char, cap: i32) -> i32;
         pub fn ea_startup_error(title: *const c_char, message: *const c_char);
+        pub fn ea_startup_run_with_stack(size: std::ffi::c_ulong, f: extern "C" fn(*mut std::ffi::c_void), arg: *mut std::ffi::c_void) -> i32;
     }
     pub fn cstr(s: &str) -> Result<CString, String> {
         CString::new(s).map_err(|_| "path or setting contains NUL".into())
@@ -45,6 +46,51 @@ pub fn quiet_dos() {
     // SAFETY: writes the calling process's own pr_WindowPtr on its own task.
     unsafe {
         native::ea_startup_quiet_dos();
+    }
+}
+
+/// Runs `f` on a stack of at least `bytes`, on this task, and returns its result. An AROS program
+/// starts on its caller's stack (40,960 bytes in an AROS One Shell, unless `Stack` raised it), too
+/// small for a GUI's main loop; a Workbench start uses the icon's stack size. When the current
+/// stack is large enough `f` runs directly, else on a new stack through exec's `NewStackSwap`
+/// (the same task, so windows and signals stay where they are). A panic in `f` is caught on the
+/// new stack and resumed after the switch back. If the stack cannot be allocated, `f` runs on
+/// the current one and a warning is printed.
+pub fn run_with_stack<R>(bytes: usize, f: impl FnOnce() -> R) -> R {
+    #[cfg(target_os = "aros")]
+    {
+        struct Call<F, R> {
+            f: Option<F>,
+            out: Option<std::thread::Result<R>>,
+        }
+        extern "C" fn trampoline<F: FnOnce() -> R, R>(arg: *mut std::ffi::c_void) {
+            // SAFETY: `arg` is the `Call` below, alive and not otherwise used during the call.
+            let call = unsafe { &mut *(arg as *mut Call<F, R>) };
+            if let Some(f) = call.f.take() {
+                call.out = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)));
+            }
+        }
+        let mut call = Call { f: Some(f), out: None };
+        // SAFETY: the trampoline matches the C signature and gets a pointer to `call`, which
+        // outlives the call; the C side runs it once, synchronously.
+        let rc = unsafe {
+            native::ea_startup_run_with_stack(bytes as std::ffi::c_ulong, trampoline::<_, R>, &mut call as *mut Call<_, R> as *mut std::ffi::c_void)
+        };
+        if rc != 0 {
+            eprintln!("no memory for a {bytes}-byte stack; running on the current stack");
+        }
+        match call.out {
+            Some(Ok(r)) => return r,
+            Some(Err(panic)) => std::panic::resume_unwind(panic),
+            None => {}
+        }
+        // Not run (no memory for the stack): run here.
+        return (call.f.take().expect("not run"))();
+    }
+    #[cfg(not(target_os = "aros"))]
+    {
+        let _ = bytes;
+        f()
     }
 }
 
@@ -169,6 +215,13 @@ pub fn nix_to_dos(path: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{dos_to_nix, nix_to_dos};
+    #[test]
+    fn run_with_stack_returns_and_resumes_panics() {
+        assert_eq!(super::run_with_stack(1 << 20, || 41 + 1), 42);
+        let r = std::panic::catch_unwind(|| super::run_with_stack(1 << 20, || panic!("inside")));
+        assert!(r.is_err());
+    }
+
     #[test]
     fn normalized_paths_round_trip() {
         for p in ["RAM:", "Work:My Pictures/zażółć.svg", "Ram Disk:a.svg"] {

@@ -88,3 +88,33 @@ void ea_startup_error(const char *title, const char *message) {
     IPTR args[] = { (IPTR)message };
     EasyRequestArgs(NULL, &es, NULL, (RAWARG)args);
 }
+
+/* Runs fn(arg) on a stack of at least `size` bytes, on this task: directly when the current stack
+ * is that large already, else on a new stack through exec's NewStackSwap (AROS starts a program
+ * on its caller's stack: 40,960 bytes in an AROS One Shell unless `Stack` raised it). Returns 0
+ * after fn returned, -1 when the stack could not be allocated (fn did not run). */
+#include <exec/tasks.h>
+#include <exec/memory.h>
+
+static void stack_trampoline(void (*fn)(void *), void *arg) { fn(arg); }
+
+int ea_startup_run_with_stack(unsigned long size, void (*fn)(void *), void *arg) {
+    struct Task *me = FindTask(NULL);
+    unsigned long have = (unsigned long)((UBYTE *)me->tc_SPUpper - (UBYTE *)me->tc_SPLower);
+    if (have >= size) {
+        fn(arg);
+        return 0;
+    }
+    APTR stack = AllocMem(size, MEMF_ANY);
+    if (!stack) return -1;
+    struct StackSwapStruct sss;
+    struct StackSwapArgs args = {{ 0 }};
+    sss.stk_Lower = stack;
+    sss.stk_Upper = (UBYTE *)stack + size;
+    sss.stk_Pointer = sss.stk_Upper;
+    args.Args[0] = (IPTR)fn;
+    args.Args[1] = (IPTR)arg;
+    NewStackSwap(&sss, (APTR)stack_trampoline, &args);
+    FreeMem(stack, size);
+    return 0;
+}
