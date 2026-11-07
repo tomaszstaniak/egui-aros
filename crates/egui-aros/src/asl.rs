@@ -4,7 +4,7 @@
 //! A program started from Workbench runs in its own drawer, so such a path names a different
 //! file there; the drawer is resolved with `Lock` and `NameFromLock` before it is returned.
 //! Paths are passed to and from DOS byte for byte, as Rust's std does; titles and patterns are
-//! converted to ISO 8859-1, the requester's charset.
+//! converted to the system character set, which the requester draws in.
 
 use crate::WindowHandle;
 
@@ -29,7 +29,7 @@ pub fn request(window: &WindowHandle, select: Select, title: &str, dir: &str, fi
         use std::ffi::{c_char, CString};
         let cbytes = |b: Vec<u8>| CString::new(b.into_iter().filter(|&c| c != 0).collect::<Vec<u8>>()).unwrap_or_default();
         let (title, dir, file, pattern) =
-            (cbytes(to_latin1(title)), cbytes(dir.as_bytes().to_vec()), cbytes(file.as_bytes().to_vec()), cbytes(to_latin1(pattern)));
+            (cbytes(to_system(title)), cbytes(dir.as_bytes().to_vec()), cbytes(file.as_bytes().to_vec()), cbytes(to_system(pattern)));
         let (save, mode) = match select {
             Select::Open => (0, 0),
             Select::OpenMany => (0, 1),
@@ -66,28 +66,23 @@ pub fn request(window: &WindowHandle, select: Select, title: &str, dir: &str, fi
     }
 }
 
-/// UTF-8 to ISO 8859-1; common punctuation outside it gets its plain equivalent, anything else
-/// becomes `?`.
-pub fn to_latin1(s: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(s.len());
-    for c in s.chars() {
-        match c as u32 {
-            n if n < 256 => out.push(n as u8),
-            0x2010..=0x2015 | 0x2212 => out.push(b'-'),
-            0x2018 | 0x2019 | 0x201a => out.push(b'\''),
-            0x201c | 0x201d | 0x201e => out.push(b'"'),
-            0x2026 => out.extend_from_slice(b"..."),
-            _ => out.push(b'?'),
-        }
-    }
-    out
+/// Text for the requester in the system character set; characters it lacks get a plain
+/// equivalent (dashes, quotes, the ellipsis) or `?`.
+pub fn to_system(s: &str) -> Vec<u8> {
+    aros_gui_sys::charset::system().encode_display(s)
 }
 
-/// A path from DOS: UTF-8 if it is valid UTF-8 (as Rust's std wrote it), else ISO 8859-1.
+/// A path from DOS: UTF-8 if it is valid UTF-8 (as Rust's std wrote it), else bytes in the system
+/// character set (a name another AROS program gave). Such a name is shown right, but Rust's std
+/// opens the UTF-8 form of it, which is a different name on disk.
 pub fn path_from_bytes(bytes: &[u8]) -> String {
+    path_from_bytes_in(bytes, aros_gui_sys::charset::system())
+}
+
+fn path_from_bytes_in(bytes: &[u8], charset: &aros_gui_sys::charset::Charset) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_owned(),
-        Err(_) => bytes.iter().map(|&b| char::from(b)).collect(),
+        Err(_) => charset.decode(bytes),
     }
 }
 
@@ -96,9 +91,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn latin1_round_trip_and_fallbacks() {
-        assert_eq!(to_latin1("Zażółć – \u{2026}"), b"Za?\xf3?? - ...".to_vec());
+    fn requester_text_and_paths() {
+        use aros_gui_sys::charset::Charset;
+        // The host's system set is the ISO 8859-1 fallback.
+        assert_eq!(to_system("Zażółć – \u{2026}"), b"Za?\xf3?? - ...".to_vec());
         assert_eq!(path_from_bytes(b"RAM:caf\xe9"), "RAM:café");
         assert_eq!(path_from_bytes("RAM:zażółć".as_bytes()), "RAM:zażółć");
+        let mut t = [0u32; 256];
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = i as u32;
+        }
+        t[0xB1] = u32::from('ą');
+        let latin2 = Charset::from_ucs4("ISO-8859-2", 5, aros_gui_sys::charset::Source::Locale, &t);
+        assert_eq!(path_from_bytes_in(b"RAM:\xb1", &latin2), "RAM:ą");
     }
 }

@@ -1,0 +1,75 @@
+From: egui-aros
+Subject: [PATCH] winit (AROS): key text and titles in the system character set
+
+Crate: winit 0.30.13 (storytold fork a517b384) with 0001-0002.
+Date: 2026-11-07
+Problem: key text was read as ISO 8859-1. With the Polish keymap (pc105_pl)
+  AltGr+a, AltGr+e typed "±ê" instead of "ąę" (pool, every Craft shell, noted
+  2026-10-19); titles were converted to ISO 8859-1 the same way, so a Polish
+  document name showed wrong letters in the title bar.
+Rationale: keymaps and Intuition use the system character set named by
+  ENV:CHARSET. aros-gui-sys (patch 0003) reads that set from codesets.library
+  once; the backend decodes keymap bytes and encodes titles through it.
+  Titles keep the plain punctuation fallbacks of 0002, now in aros-gui-sys
+  (`Charset::encode_display`).
+Prerequisites: aros-gui-sys 0003-system-charset-and-ftxt-cset.patch.
+Upstream-status: candidate for the AROS contrib crate store (not submitted).
+Verification: see the egui-aros build records.
+Removal: when the contrib crate store carries an equivalent change.
+---
+diff -ruN winit-0.30.13.orig/src/platform_impl/aros/keyboard.rs winit-0.30.13/src/platform_impl/aros/keyboard.rs
+--- winit-0.30.13.orig/src/platform_impl/aros/keyboard.rs	2026-11-07 09:58:03
++++ winit-0.30.13/src/platform_impl/aros/keyboard.rs	2026-11-07 09:58:04
+@@ -299,7 +299,8 @@
+     | sys::IEQUALIFIER_RALT
+     | sys::IEQUALIFIER_NUMERICPAD;
+ 
+-/// Text for a key through the current keymap, which produces ISO-8859-1.
++/// Text for a key through the current keymap, whose bytes are in the system character set
++/// (ENV:CHARSET; a Polish keymap types ISO 8859-2).
+ fn map_rawkey(code: u16, qualifier: u16) -> Option<SmolStr> {
+     let mut buf = [0 as c_char; 8];
+     let len = unsafe {
+@@ -313,7 +314,8 @@
+     if bytes[0] as u8 == 0x9b {
+         return None;
+     }
+-    Some(bytes.iter().map(|&b| char::from(b as u8)).collect())
++    let bytes: Vec<u8> = bytes.iter().map(|&b| b as u8).collect();
++    Some(SmolStr::new(sys::charset::system().decode(&bytes)))
+ }
+ 
+ fn printable(text: &Option<SmolStr>) -> Option<SmolStr> {
+diff -ruN winit-0.30.13.orig/src/platform_impl/aros/window.rs winit-0.30.13/src/platform_impl/aros/window.rs
+--- winit-0.30.13.orig/src/platform_impl/aros/window.rs	2026-11-07 09:58:03
++++ winit-0.30.13/src/platform_impl/aros/window.rs	2026-11-07 09:58:04
+@@ -13,25 +13,11 @@
+ use crate::window::ImePurpose;
+ use crate::{error, window};
+ 
+-/// A title for Intuition, which draws it in the system charset (ISO 8859-1 here, as the keymap
+-/// text in `keyboard.rs`). Common punctuation outside it gets its plain equivalent (a title such
+-/// as "file — App" or a "•" modified mark would otherwise show as UTF-8 bytes); anything else
+-/// becomes `?`.
++/// A title for Intuition, which draws it in the system character set (as the keymap text in
++/// `keyboard.rs`). Characters the set lacks get a plain equivalent where there is one (a title
++/// such as "file — App" or a "•" modified mark), else `?`.
+ fn title_cstring(title: &str) -> CString {
+-    let mut out = Vec::with_capacity(title.len());
+-    for c in title.chars() {
+-        match c as u32 {
+-            0 => {},
+-            n if n < 256 => out.push(n as u8),
+-            0x2010..=0x2015 | 0x2212 => out.push(b'-'),
+-            0x2018 | 0x2019 | 0x201a => out.push(b'\''),
+-            0x201c | 0x201d | 0x201e => out.push(b'"'),
+-            0x2022 | 0x25cf => out.push(b'*'),
+-            0x2026 => out.extend_from_slice(b"..."),
+-            _ => out.push(b'?'),
+-        }
+-    }
+-    CString::new(out).unwrap_or_default()
++    CString::new(sys::charset::system().encode_display(title)).unwrap_or_default()
+ }
+ 
+ /// Default interior when the application asks for none.

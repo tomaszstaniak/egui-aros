@@ -32,7 +32,7 @@
       "upstream": "winit:.",
       "workspace": "Cargo.toml",
       "series": "winit-0.30.13-storytold",
-      "tree_sha256": "ce7e70f888196014f49282650419959dab236c023c8c1918013a1cb11caba9db"
+      "tree_sha256": "086368e2311fd01e774ba3b985309281a21d7d5047640087ed53e73e15180faf"
     },
     {
       "name": "ecolor",
@@ -74,7 +74,7 @@
       "version": "0.37.0",
       "upstream": "egui:crates/egui-winit",
       "workspace": "Cargo.toml",
-      "tree_sha256": "39cd16528edc7f200ee438a172f086518fc1089d4ed9b78678a0f51b9a2c0144"
+      "tree_sha256": "958a940415fdb47aad526138b5ecd75bdd9b99c475fe336a10cadfab764799ef"
     },
     {
       "name": "egui_glow",

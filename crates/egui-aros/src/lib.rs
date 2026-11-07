@@ -22,6 +22,10 @@ mod gl;
 
 #[cfg(feature = "asl")]
 pub mod asl;
+pub mod clipboard_image;
+pub mod launch;
+pub mod startup;
+pub use clipboard_image::{clipboard_image, set_clipboard_image, ClipboardImage};
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -154,42 +158,34 @@ pub fn caps_lock() -> bool {
     false
 }
 
-/// The system clipboard's text (clipboard.device unit 0, IFF FTXT, read as ISO 8859-1), for
-/// programs that read it outside egui's own paste (which goes through egui-winit's clipboard).
+/// The system clipboard's text (clipboard.device unit 0, IFF FTXT), for programs that read it
+/// outside egui's own paste (which goes through egui-winit's clipboard, the same code): bytes in
+/// the system character set, or UTF-8 under an FTXT CSET of 106. `None` when the clipboard holds
+/// no text (empty, or only a picture).
 pub fn clipboard_text() -> Option<String> {
     #[cfg(target_os = "aros")]
-    {
-        let mut len = 0;
-        // SAFETY: an out-parameter; the returned buffer is freed with aros_gui_clip_free below.
-        let text = unsafe { aros_gui_sys::aros_gui_clip_read(&mut len) };
-        if text.is_null() {
-            return None;
-        }
-        // SAFETY: the glue returns `len` bytes at `text`.
-        let out = unsafe { std::slice::from_raw_parts(text, len.max(0) as usize) }.iter().map(|&b| char::from(b)).collect();
-        // SAFETY: allocated by aros_gui_clip_read.
-        unsafe { aros_gui_sys::aros_gui_clip_free(text) };
-        Some(out)
-    }
+    return aros_gui_sys::clipboard::read_text();
     #[cfg(not(target_os = "aros"))]
     None
 }
 
-/// Writes text to the system clipboard (as [`clipboard_text`] reads it; characters outside
-/// ISO 8859-1 become `?`). `false` if the clipboard could not be written.
+/// Writes text to the system clipboard as [`clipboard_text`] reads it: in the system character
+/// set when it holds every character (so every AROS program reads it), else as UTF-8 with CSET
+/// 106. `false` if the clipboard could not be written.
 pub fn set_clipboard_text(text: &str) -> bool {
     #[cfg(target_os = "aros")]
-    {
-        let bytes: Vec<u8> = text.chars().map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')).collect();
-        let Ok(len) = i32::try_from(bytes.len()) else { return false };
-        // SAFETY: `bytes` holds `len` bytes for the duration of the call.
-        unsafe { aros_gui_sys::aros_gui_clip_write(bytes.as_ptr(), len) == 0 }
-    }
+    return aros_gui_sys::clipboard::write_text(text);
     #[cfg(not(target_os = "aros"))]
     {
         let _ = text;
         false
     }
+}
+
+/// The system character set keys, titles and clipboard text are converted with, read once
+/// from ENV:CHARSET through codesets.library ([`aros_gui_sys::charset`]).
+pub fn system_charset() -> &'static aros_gui_sys::charset::Charset {
+    aros_gui_sys::charset::system()
 }
 
 /// The URL with spaces, quotes, `*`, every control character and every non-ASCII byte
@@ -1083,6 +1079,7 @@ impl ApplicationHandler<()> for Runner<'_> {
 /// Opens the window, runs the program until the window closes, and returns. `ctx` may be shared
 /// with the program's threads; their repaint requests wake the loop while it runs.
 pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<(), Error> {
+    log::info!("{}", system_charset().describe());
     let event_loop = EventLoop::<()>::with_user_event().build().map_err(Error::EventLoop)?;
     let repaint = Arc::new(Repaint {
         due: Mutex::new(None),
