@@ -100,11 +100,13 @@ void ea_startup_error(const char *title, const char *message) {
 #include <aros/symbolsets.h>
 #include <aros/startup.h>
 
-extern const ULONG __stack __attribute__((weak));
+/* A weak definition: the program's own (strong) definition replaces it, and collect-aros does not
+ * accept an undefined weak symbol. */
+ULONG __stack __attribute__((weak)) = 0;
 
 static void ea_startup_stack_entry(struct ExecBase *SysBase) {
     struct Task *me = FindTask(NULL);
-    IPTR want = &__stack ? (IPTR)__stack : 0;
+    IPTR want = __stack;
     IPTR have = (IPTR)me->tc_SPUpper - (IPTR)me->tc_SPLower;
     want = (want + 15) & ~(IPTR)15;
     if (want <= have) {
