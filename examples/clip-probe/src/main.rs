@@ -15,6 +15,7 @@
 //!   clip-probe expect W H          the clipboard holds the probe pattern WxH, pixel-exact
 //!   clip-probe puttext TEXTFILE    put the UTF-8 text in TEXTFILE on the clipboard
 //!   clip-probe gettext FILE        write the clipboard's text to FILE as UTF-8 (with its CSET)
+//!   clip-probe putbad cut|huge|zero  leave a damaged picture on the clipboard (for paste tests)
 
 use egui_aros::ClipboardImage;
 use std::process::ExitCode;
@@ -264,6 +265,15 @@ fn main() -> ExitCode {
         Some("puttext") if args.len() == 2 => r.check("puttext", (|| {
             let text = std::fs::read_to_string(&args[1]).map_err(|e| e.to_string())?;
             if egui_aros::set_clipboard_text(&text) { Ok(()) } else { Err("write failed".into()) }
+        })()),
+        Some("putbad") if args.len() == 2 => r.check("putbad", (|| match args[1].as_str() {
+            "cut" => {
+                let (head, body) = egui_aros::clipboard_image::encode_ilbm(64, 64, 256, &pattern(64, 64))?;
+                egui_aros::clipboard_image::write_ilbm_payloads(&head, &body[..body.len() / 3])
+            }
+            "huge" => egui_aros::clipboard_image::write_ilbm_payloads(&bmhd(60000, 60000, 24, 1), &[0x80; 64]),
+            "zero" => egui_aros::clipboard_image::write_ilbm_payloads(&bmhd(0, 0, 24, 1), &[]),
+            other => Err(format!("unknown kind {other}")),
         })()),
         Some("gettext") if args.len() == 2 => r.check("gettext", (|| {
             let text = egui_aros::clipboard_text().ok_or("no text on the clipboard")?;
