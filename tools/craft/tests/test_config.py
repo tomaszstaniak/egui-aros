@@ -157,6 +157,14 @@ class PlatformPatches(Temp):
         self.assertEqual(craft.LIBC_DIR, support.TOOLS / "platform" / "libc-aros")
 
 
+class ReleaseName(unittest.TestCase):
+    def test_only_a_revision_with_rebuilt_programs_shows_in_their_name(self):
+        self.assertEqual(craft.shown_release({"release": "1.2.0"}), "1.2.0")
+        self.assertEqual(craft.shown_release({"release": "1.2.0", "revision": 1}), "1.2.0")
+        self.assertEqual(craft.shown_release({"release": "1.2.0", "revision": 2, "revision_programs": "rebuilt"}), "1.2.0-r2")
+        self.assertEqual(craft.shown_release({"release": "1.2.0", "revision_programs": "rebuilt"}), "1.2.0")
+
+
 class Package(Temp):
     def test_packaging_finds_each_ports_local_file_by_its_target(self):
         grid = support.port(self.root, "gridcraft", "GridCraft", "GRIDCRAFT")
