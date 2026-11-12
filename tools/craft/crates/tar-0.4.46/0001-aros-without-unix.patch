@@ -1,0 +1,195 @@
+From: AROS Craft ports
+Subject: [PATCH] tar: std-only paths for AROS targets without the unix family
+
+Crate: tar 0.4.46 (crates.io).
+Date: 2026-11-07
+Problem: std for aarch64 AROS (Raspberry Pi) does not set the unix family,
+  and tar has platform code only for unix, windows and wasm32: path
+  conversion, symlinks, permissions and ownership do not compile.
+Rationale: take tar's wasm32 code (UTF-8 path bytes, no symlink creation,
+  no permissions or ownership) on AROS targets that are not unix. x86_64
+  AROS is unix and is unchanged.
+Upstream-status: local port, not submitted.
+Removal: when the aarch64 AROS std has the unix family.
+---
+diff --git a/src/entry.rs b/src/entry.rs
+--- a/src/entry.rs
++++ b/src/entry.rs
+@@ -593,7 +593,7 @@
+             }
+             return Ok(Unpacked::__Nonexhaustive);
+ 
+-            #[cfg(target_arch = "wasm32")]
++            #[cfg(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))]
+             #[allow(unused_variables)]
+             fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
+                 Err(io::Error::new(io::ErrorKind::Other, "Not implemented"))
+@@ -604,7 +604,7 @@
+                 ::std::os::windows::fs::symlink_file(src, dst)
+             }
+ 
+-            #[cfg(all(unix, not(target_arch = "wasm32")))]
++            #[cfg(all(unix, not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+             fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
+                 ::std::os::unix::fs::symlink(src, dst)
+             }
+@@ -730,7 +730,7 @@
+             })
+         }
+ 
+-        #[cfg(all(unix, not(target_arch = "wasm32")))]
++        #[cfg(all(unix, not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+         fn _set_ownerships(
+             dst: &Path,
+             f: &Option<&mut std::fs::File>,
+@@ -771,7 +771,7 @@
+         }
+ 
+         // Windows does not support posix numeric ownership IDs
+-        #[cfg(any(windows, target_arch = "wasm32"))]
++        #[cfg(any(windows, any(target_arch = "wasm32", all(target_os = "aros", not(unix)))))]
+         fn _set_ownerships(
+             _: &Path,
+             _: &Option<&mut std::fs::File>,
+@@ -801,7 +801,7 @@
+             })
+         }
+ 
+-        #[cfg(all(unix, not(target_arch = "wasm32")))]
++        #[cfg(all(unix, not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+         fn _set_perms(
+             dst: &Path,
+             f: Option<&mut std::fs::File>,
+@@ -845,7 +845,7 @@
+             }
+         }
+ 
+-        #[cfg(target_arch = "wasm32")]
++        #[cfg(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))]
+         #[allow(unused_variables)]
+         fn _set_perms(
+             dst: &Path,
+@@ -857,7 +857,7 @@
+             Err(io::Error::new(io::ErrorKind::Other, "Not implemented"))
+         }
+ 
+-        #[cfg(all(unix, not(target_arch = "wasm32"), feature = "xattr"))]
++        #[cfg(all(unix, not(any(target_arch = "wasm32", all(target_os = "aros", not(unix)))), feature = "xattr"))]
+         fn set_xattrs(me: &mut EntryFields, dst: &Path) -> io::Result<()> {
+             use std::ffi::OsStr;
+             use std::os::unix::prelude::*;
+@@ -895,7 +895,7 @@
+         }
+         // Windows does not completely support posix xattrs
+         // https://en.wikipedia.org/wiki/Extended_file_attributes#Windows_NT
+-        #[cfg(any(windows, not(feature = "xattr"), target_arch = "wasm32"))]
++        #[cfg(any(windows, not(feature = "xattr"), any(target_arch = "wasm32", all(target_os = "aros", not(unix)))))]
+         fn set_xattrs(_: &mut EntryFields, _: &Path) -> io::Result<()> {
+             Ok(())
+         }
+diff --git a/src/header.rs b/src/header.rs
+--- a/src/header.rs
++++ b/src/header.rs
+@@ -1,4 +1,4 @@
+-#[cfg(all(unix, not(target_arch = "wasm32")))]
++#[cfg(all(unix, not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+ use std::os::unix::prelude::*;
+ #[cfg(windows)]
+ use std::os::windows::prelude::*;
+@@ -20,7 +20,7 @@
+ ///
+ /// This value, chosen after careful deliberation, corresponds to _Jul 23, 2006_,
+ /// which is the date of the first commit for what would become Rust.
+-#[cfg(all(any(unix, windows), not(target_arch = "wasm32")))]
++#[cfg(all(any(unix, windows), not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+ pub const DETERMINISTIC_TIMESTAMP: u64 = 1153704088;
+ 
+ pub(crate) const BLOCK_SIZE: u64 = 512;
+@@ -779,13 +779,13 @@
+         }
+     }
+ 
+-    #[cfg(target_arch = "wasm32")]
++    #[cfg(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))]
+     #[allow(unused_variables)]
+     fn fill_platform_from(&mut self, meta: &fs::Metadata, mode: HeaderMode) {
+         unimplemented!();
+     }
+ 
+-    #[cfg(all(unix, not(target_arch = "wasm32")))]
++    #[cfg(all(unix, not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+     fn fill_platform_from(&mut self, meta: &fs::Metadata, mode: HeaderMode) {
+         match mode {
+             HeaderMode::Complete => {
+@@ -1670,7 +1670,7 @@
+     copy_path_into_inner(slot, path, is_link_name, true, allow_absolute)
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))]
+ fn ends_with_slash(p: &Path) -> bool {
+     p.to_string_lossy().ends_with('/')
+ }
+@@ -1681,12 +1681,12 @@
+     last == Some(b'/' as u16) || last == Some(b'\\' as u16)
+ }
+ 
+-#[cfg(all(unix, not(target_arch = "wasm32")))]
++#[cfg(all(unix, not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+ fn ends_with_slash(p: &Path) -> bool {
+     p.as_os_str().as_bytes().ends_with(b"/")
+ }
+ 
+-#[cfg(any(windows, target_arch = "wasm32"))]
++#[cfg(any(windows, any(target_arch = "wasm32", all(target_os = "aros", not(unix)))))]
+ pub fn path2bytes(p: &Path) -> io::Result<Cow<'_, [u8]>> {
+     p.as_os_str()
+         .to_str()
+@@ -1708,7 +1708,7 @@
+         })
+ }
+ 
+-#[cfg(all(unix, not(target_arch = "wasm32")))]
++#[cfg(all(unix, not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+ /// On unix this will never fail
+ pub fn path2bytes(p: &Path) -> io::Result<Cow<'_, [u8]>> {
+     Ok(Cow::Borrowed(p.as_os_str().as_bytes()))
+@@ -1737,7 +1737,7 @@
+     }
+ }
+ 
+-#[cfg(all(unix, not(target_arch = "wasm32")))]
++#[cfg(all(unix, not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+ /// On unix this operation can never fail.
+ pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
+     use std::ffi::{OsStr, OsString};
+@@ -1748,7 +1748,7 @@
+     })
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))]
+ pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
+     Ok(match bytes {
+         Cow::Borrowed(bytes) => {
+@@ -1760,7 +1760,7 @@
+     })
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))]
+ fn invalid_utf8<T>(_: T) -> io::Error {
+     io::Error::new(io::ErrorKind::InvalidData, "Invalid utf-8")
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -46,7 +46,7 @@
+ pub use crate::entry::{Entry, Unpacked};
+ pub use crate::entry_type::EntryType;
+ pub use crate::header::GnuExtSparseHeader;
+-#[cfg(all(any(unix, windows), not(target_arch = "wasm32")))]
++#[cfg(all(any(unix, windows), not(any(target_arch = "wasm32", all(target_os = "aros", not(unix))))))]
+ pub use crate::header::DETERMINISTIC_TIMESTAMP;
+ pub use crate::header::{GnuHeader, GnuSparseHeader, Header, HeaderMode, OldHeader, UstarHeader};
+ pub use crate::pax::{PaxExtension, PaxExtensions};
