@@ -131,6 +131,32 @@ class Crates(Temp):
         self.assertEqual(craft.crate_specs(), [])
 
 
+class PlatformPatches(Temp):
+    def test_the_shared_sets_are_used_unless_the_port_names_its_own(self):
+        grid = support.port(self.root, "gridcraft", "GridCraft", "GRIDCRAFT")
+        craft.configure(grid)
+        self.assertEqual(craft.GLUE_DIR, support.TOOLS / "platform" / "aros-glue")
+        self.assertEqual(craft.LIBC_DIR, support.TOOLS / "platform" / "libc-aros")
+        for directory in (craft.GLUE_DIR, craft.LIBC_DIR):
+            for patch in (directory / "series").read_text().split():
+                self.assertTrue((directory / patch).is_file(), patch)
+        self.assertTrue((craft.GLUE_DIR / "series").read_text().split(), "the AArch64 bridge patch must not go missing")
+
+    def test_a_copy_in_the_port_is_not_used_by_accident(self):
+        grid = support.port(self.root, "gridcraft", "GridCraft", "GRIDCRAFT")
+        own = grid / "patches" / "aros-glue"
+        own.mkdir()
+        (own / "series").write_text("")
+        with self.assertRaises(craftconfig.ConfigError):
+            craft.configure(grid)
+        port = json.loads((grid / "scripts" / "port.json").read_text())
+        port["own_platform_patches"] = ["aros-glue"]
+        (grid / "scripts" / "port.json").write_text(json.dumps(port))
+        craft.configure(grid)
+        self.assertEqual(craft.GLUE_DIR, own)
+        self.assertEqual(craft.LIBC_DIR, support.TOOLS / "platform" / "libc-aros")
+
+
 class Package(Temp):
     def test_packaging_finds_each_ports_local_file_by_its_target(self):
         grid = support.port(self.root, "gridcraft", "GridCraft", "GRIDCRAFT")

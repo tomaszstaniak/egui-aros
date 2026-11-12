@@ -1,0 +1,52 @@
+From: AROS Craft ports
+Subject: [PATCH] aros_thread_glue: room for the library's pthread_attr_t
+
+Repository: pomaros-hosted 3bc9359d439f, hosted/rust/aros_thread_glue.c.
+Date: 2026-11-07
+Problem: the glue declares its own 32-byte pthread_attr_t. Mainline
+  ddd41377d3 (2026-10-30, pthread CPU affinity) made the library's 168 bytes
+  on aarch64. On the Raspberry Pi nightly 20261105, pthread_attr_init()
+  wrote 136 bytes past the local and over the spawn bookkeeping; every
+  std::thread then started at address 0 (Illegal instruction, PC 0x8, lr 0).
+Rationale: only the library touches the attribute's fields; a 512-byte
+  union gives it room whatever its size, and the glue keeps its rule of not
+  including <pthread.h> (the hosted backend's macOS SDK).
+Upstream-status: to report to pomaros-hosted (not sent).
+Removal: when the glue sizes the attribute from the library.
+---
+--- a/hosted/rust/aros_thread_glue.c
++++ b/hosted/rust/aros_thread_glue.c
+@@ -63,7 +63,12 @@
+ int aros_thr_spawn(unsigned long stacksize, void *(*start)(void *), void *arg,
+                    unsigned int *out_tid)
+ {
+-    pthread_attr_t attr;
++    /* Room for the library's pthread_attr_t, not this file's copy: mainline ddd41377d3
++     * (2026-10-30) appended CPU affinity, 168 bytes on aarch64 against the 32 declared above,
++     * and pthread_attr_init() then wrote over the neighbouring locals. Only the library
++     * touches the fields. */
++    union { pthread_attr_t attr; unsigned char room[512]; } attr_store;
++    pthread_attr_t *const attr = &attr_store.attr;
+     pthread_t tid = 0;
+     int rc;
+     struct aros_thr_boot *boot;
+@@ -77,15 +82,15 @@
+     boot->start = start;
+     boot->arg = arg;
+ 
+-    if (pthread_attr_init(&attr) != 0) {
++    if (pthread_attr_init(attr) != 0) {
+         FreeVec(boot);
+         return 12 /* ENOMEM */;
+     }
+     if (stacksize > 0)
+-        pthread_attr_setstacksize(&attr, stacksize);
++        pthread_attr_setstacksize(attr, stacksize);
+ 
+-    rc = pthread_create(&tid, &attr, aros_thr_entry, boot);
+-    pthread_attr_destroy(&attr);
++    rc = pthread_create(&tid, attr, aros_thr_entry, boot);
++    pthread_attr_destroy(attr);
+ 
+     if (rc == 0)
+         *out_tid = tid;

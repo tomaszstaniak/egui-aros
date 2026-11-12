@@ -10,6 +10,7 @@ One implementation of the workflow the Craft ports for AROS share: pinned upstre
 | `package.py`, `icons.py` | `package binary` and `package source` |
 | `bootstrap.py` | what a port keeps as its `scripts/craft.py` |
 | `crates/` | crates.io crates patched for every port (see below) |
+| `platform/` | patches to platform sources built for every port: rust-aros `libc-aros`, the AArch64 C bridge (`aros-glue`) |
 | `tests/` | `python3 -m unittest discover -s tools/craft/tests` |
 
 ## What a port keeps
@@ -46,6 +47,8 @@ The tools take the port's repository from the bootstrap, never from their own lo
 ```
 
 Nothing is picked silently. A shared name that does not exist is an error. A crate of the port's own that the shared set also has is an error unless its entry says `"replaces_shared": true`. `update-check` lists shared crates that a candidate locks and the port does not name.
+
+`platform/` works the same way for the two platform patch sets: every port builds with the shared `libc-aros` and `aros-glue` patches. A port that needs its own names the set under `own_platform_patches` in `port.json`; a copy in the port's `patches/` that is not named there stops the tools, so neither copy is used without a decision. The pthread patch (`patches/aros-pthread`) is still kept by each port.
 
 ## Changing the pin
 

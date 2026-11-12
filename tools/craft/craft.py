@@ -52,6 +52,8 @@ GLUE_SOURCES = ("aros_fs_glue", "aros_thread_glue", "aros_sync_glue", "aros_env_
 
 # crates.io crates patched the same way for every Craft port (see crate_specs).
 SHARED_CRATES_DIR = Path(__file__).resolve().parent / "crates"
+# Patches to platform sources built for every port (rust-aros libc-aros, the AArch64 C bridge).
+SHARED_PLATFORM_DIR = Path(__file__).resolve().parent / "platform"
 # Set by configure() for the port being worked on; never derived from this file's location.
 REPO = UPSTREAMS = PORT = APP = SERIES_DIR = CRATES_DIR = LIBC_DIR = PTHREAD_DIR = GLUE_DIR = WORK = None
 # Test tools built with the same profile: name -> (manifest directory, binary).
@@ -61,6 +63,22 @@ PACKAGES = {}
 COMMITTER = []
 # How these tools were obtained (the port's bootstrap passes it): recorded with every build.
 TOOLING = None
+
+
+def platform_patches(name):
+    """The directory of a platform patch set (libc-aros, aros-glue): the shared one beside this
+    file, the same for every port. A port that needs its own names the set under
+    `own_platform_patches` in port.json; a copy in the port that is not named there is an error,
+    so that neither copy is used without anyone having chosen it."""
+    own = REPO / "patches" / name
+    if name in PORT.get("own_platform_patches", []):
+        if not (own / "series").is_file():
+            raise craftconfig.ConfigError(f"port.json names its own {name} patches, but {own}/series is missing")
+        return own
+    if own.exists():
+        raise craftconfig.ConfigError(f"{own} exists and the shared tools have the {name} patches too: remove the port's copy, "
+                                      f"or name `{name}` under own_platform_patches in scripts/port.json")
+    return SHARED_PLATFORM_DIR / name
 
 
 def configure(repo, tooling=None):
@@ -73,9 +91,9 @@ def configure(repo, tooling=None):
     APP = PORT["id"]
     SERIES_DIR = REPO / "patches" / APP
     CRATES_DIR = REPO / "patches" / "crates"
-    LIBC_DIR = REPO / "patches" / "libc-aros"
     PTHREAD_DIR = REPO / "patches" / "aros-pthread"
-    GLUE_DIR = REPO / "patches" / "aros-glue"
+    LIBC_DIR = platform_patches("libc-aros")
+    GLUE_DIR = platform_patches("aros-glue")
     WORK = REPO / "work" / APP
     TOOLS = {k: tuple(v) for k, v in PORT.get("tools", {}).items()}
     PACKAGES = PORT["packages"]
