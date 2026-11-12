@@ -1,0 +1,18 @@
+[package]
+name = "egui-aros-job-probe"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Native check of craft-jobs: workers start, run, report and end; the program's threads are gone at exit"
+
+[[bin]]
+name = "job-probe"
+path = "src/main.rs"
+
+[dependencies]
+# Supplied by a Craft port's build (scripts/craft.py --tool) for each AROS target.
+aros-startup = "0.1"
+craft-jobs = "0.1"
+
+[workspace]

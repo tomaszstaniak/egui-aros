@@ -607,10 +607,13 @@ def cmd_vendor(args):
              for p in (REPO / "crates" / "egui-aros").rglob("*") if p.is_file()}
     sync_tree(files, dest / "egui-aros")
     # This repository's other crates, beside egui-aros (its path dependencies resolve there) and
-    # patched in for programs that use them directly (aros-startup in a command-line program).
-    for own in ("aros-startup",):
-        own_files = {p.relative_to(REPO / "crates" / own).as_posix(): (p.read_bytes(), os.access(p, os.X_OK))
-                     for p in (REPO / "crates" / own).rglob("*") if p.is_file()}
+    # patched in for programs that use them directly (aros-startup in a command-line program,
+    # craft-jobs for work off the window loop).
+    for own in ("aros-startup", "craft-jobs"):
+        own_root = REPO / "crates" / own
+        own_files = {p.relative_to(own_root).as_posix(): (p.read_bytes(), os.access(p, os.X_OK))
+                     for p in own_root.rglob("*")
+                     if p.is_file() and p.relative_to(own_root).parts[0] not in ("target", "Cargo.lock")}
         sync_tree(own_files, dest / own)
         crates[own] = {"package": own, "path": str(dest / own), "version": "0.1.0", "tree_sha256": tree_hash(dest / own)}
     record = {"egui_aros": str(dest / "egui-aros"),

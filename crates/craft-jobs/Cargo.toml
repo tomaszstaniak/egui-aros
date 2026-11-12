@@ -1,0 +1,9 @@
+[package]
+name = "craft-jobs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "A small fixed pool of worker threads for a GUI program: bounded queue, results taken without blocking, a wake-up call when one is ready, orderly shutdown. No GUI or platform dependency"
+
+[dependencies]

@@ -1,8 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/egui-aros", "crates/aros-startup", "examples/glow-probe", "examples/lifecycle-probe", "examples/cpu-probe"]
-# Built by the Craft ports' scripts/craft.py --tool for each AROS target.
-exclude = ["examples/clip-probe", "examples/stack-probe"]
+# The probes are built by the Craft ports' scripts/craft.py --tool for each AROS target. craft-jobs has
+# no dependency and is tested on its own: cargo test --manifest-path crates/craft-jobs/Cargo.toml
+exclude = ["examples/clip-probe", "examples/stack-probe", "examples/job-probe", "crates/craft-jobs"]
 
 [profile.release]
 opt-level = 3
