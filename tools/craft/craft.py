@@ -937,7 +937,7 @@ def cmd_host(args):
     sync_tree(snapshot(True), src)
     egui_aros, _ = egui_aros_vendor(cfg, root, src)
     command = ["cargo", "+" + cfg["toolchain"]]
-    for name in ("egui-aros", "aros-gui-sys"):
+    for name in ("egui-aros", "aros-gui-sys", "aros-startup"):
         if name in egui_aros:
             command += ["--config", f"patch.crates-io.{name}.path=" + json.dumps(egui_aros[name])]
     command += args.cargo
