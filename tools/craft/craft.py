@@ -648,6 +648,16 @@ def build_glue(cfg, root):
     return out, record
 
 
+def shown_release(release):
+    """The name the programs print (`--version`, the log). A packaging revision that only corrects
+    the packages keeps the programs, and their name, as they were; one whose programs were rebuilt
+    (`"revision_programs": "rebuilt"` in release.json) shows in the name as `-rN`, so a report
+    names the build."""
+    revision = release.get("revision")
+    rebuilt = revision and release.get("revision_programs") == "rebuilt"
+    return release["release"] + (f"-r{revision}" if rebuilt else "")
+
+
 def cmd_build(args):
     cmd_verify(args)
     cfg = craftconfig.load(["aros_gcc", "aros_ar", "aros_sdk", "rust_aros", "toolchain", "cargo_home", "build_root"])
@@ -814,8 +824,10 @@ def cmd_build(args):
         command += ["--features", args.features]
     # The release name (packaging/release.json) is what the programs print for --version and in
     # their log, so a tester's report names the exact snapshot.
-    release_name = json.loads((REPO / "packaging" / "release.json").read_text())["release"]
-    env = dict(os.environ, **{PORT["env_prefix"] + "_BUILD_TARGET": cfg["target"], PORT["env_prefix"] + "_RELEASE": release_name},
+    release_json = json.loads((REPO / "packaging" / "release.json").read_text())
+    release_name = release_json["release"]
+    shown = shown_release(release_json)
+    env = dict(os.environ, **{PORT["env_prefix"] + "_BUILD_TARGET": cfg["target"], PORT["env_prefix"] + "_RELEASE": shown},
                CARGO_HOME=cfg["cargo_home"], CARGO_TARGET_DIR=str(root / "target"),
                AROS_CC=cfg["aros_gcc"], AROS_GCC=cfg["aros_gcc"], AROS_AR=cfg["aros_ar"], AROS_SDK=cfg["aros_sdk"])
     # C code built by cc-rs (ring, for the font store's HTTPS) uses the target's AROS compiler and
@@ -836,6 +848,7 @@ def cmd_build(args):
         "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "target": cfg["target"],
         "release": release_name,
+        "release_shown": shown,
         "path_mode": "-nix (DOS paths resolved at frontend boundaries)",
         "stack_bytes": 16777216,
         "renderers": {"gui": "egui-aros, chosen at run time (CPU / AUTO / GPU)", "features": args.features or "default"},

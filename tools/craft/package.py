@@ -10,7 +10,8 @@ patches, scripts, recipe) plus the pinned inputs every named build used. Both ap
 DIR/SHA256SUMS (default DIR: dist/ of this repository, flat; the target is in the file name).
 The app's names come from scripts/port.json, as in craft.py. `-rN` is the packaging revision
 (`revision` in release.json, arospkg's revision of the same program version): a correction of
-the packages that keeps the programs as they are.
+the packages that keeps the programs as they are, or, with `"revision_programs": "rebuilt"`, new
+programs from the same upstream version (changes of the port); those print `<release>-rN`.
 
 The configuration of a build's target is the local file (<PREFIX>_LOCAL, local.json,
 local.*.json) whose `target` is that target; local.json without a `target` is the default
@@ -168,6 +169,12 @@ def check_build(build, release):
         raise Failure(f"{build}: build status is {manifest.get('status')!r}, not a finished build")
     if manifest.get("release") != release["release"]:
         raise Failure(f"{build}: built as release {manifest.get('release')!r}, release.json is {release['release']!r}")
+    # Programs rebuilt for a revision print `<release>-rN`: a build made under another name (the
+    # first packages' programs, for one) is not this revision's.
+    if release.get("revision_programs") == "rebuilt":
+        shown = f"{release['release']}-r{release.get('revision')}"
+        if manifest.get("release_shown") != shown:
+            raise Failure(f"{build}: its programs print {manifest.get('release_shown', manifest.get('release'))!r}, this revision's print {shown!r}; rebuild")
     if manifest["work_dirty"] or manifest["source"] != "committed HEAD":
         raise Failure(f"{build}: built from a dirty or uncommitted work copy")
     command = manifest["command"]
@@ -289,7 +296,9 @@ def build_txt(release, spec, manifest, repo_head, packaged):
              f"Target:        {manifest['target']}",
              f"System:        {spec['system']}",
              f"Version:       {release['upstream_version']}",
-             *([f"Package:       revision {release['revision']} of the {release['release']} packages (the programs are unchanged)"]
+             *([f"Package:       revision {release['revision']} of the {release['release']} packages "
+                + ("(the programs were rebuilt: see the release notes)" if release.get("revision_programs") == "rebuilt"
+                   else "(the programs are unchanged)")]
                if release.get("revision") else []),
              f"Build id:      {manifest['build_id']}",
              f"Built:         {manifest['date']}",
