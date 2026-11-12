@@ -1,0 +1,32 @@
+From: AROS Craft ports
+Subject: [PATCH] filetime: AROS sets times with utimes(), symlink times unsupported
+
+Crate: filetime 0.2.29 (crates.io).
+Date: 2026-11-07
+Problem: AROS falls into filetime's generic utimes backend, which calls
+  lutimes() for symlink times. Neither C library on AROS has lutimes().
+Rationale: utimes() exists in both C libraries (ABIv11 crt, mainline
+  posixc); rust-aros libc-aros declares it. An AmigaDOS link has no times
+  of its own, so symlink times report Unsupported.
+Upstream-status: candidate for alexcrichton/filetime once AROS is a
+  libc target (not submitted).
+Removal: when filetime has an AROS backend.
+---
+diff --color -ru a/filetime-0.2.29/src/unix/utimes.rs b/filetime-0.2.29/src/unix/utimes.rs
+--- a/src/unix/utimes.rs	2026-11-07 09:47:39
++++ b/src/unix/utimes.rs	2026-11-07 09:47:56
+@@ -42,6 +42,14 @@
+     };
+     let p = CString::new(p.as_os_str().as_bytes())?;
+     let times = [to_timeval(&atime), to_timeval(&mtime)];
++    // AROS: no lutimes; an AmigaDOS link has no times of its own.
++    #[cfg(target_os = "aros")]
++    if symlink {
++        return Err(io::Error::from(io::ErrorKind::Unsupported));
++    }
++    #[cfg(target_os = "aros")]
++    let rc = unsafe { libc::utimes(p.as_ptr(), times.as_ptr()) };
++    #[cfg(not(target_os = "aros"))]
+     let rc = unsafe {
+         if symlink {
+             libc::lutimes(p.as_ptr(), times.as_ptr())

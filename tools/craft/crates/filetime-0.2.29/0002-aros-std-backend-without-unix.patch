@@ -1,0 +1,58 @@
+From: AROS Craft ports
+Subject: [PATCH] filetime: std-only backend for AROS targets without the unix family
+
+Crate: filetime 0.2.29 (crates.io).
+Date: 2026-11-07
+Problem: std for aarch64 AROS (Raspberry Pi) does not set the unix family:
+  there is no std::os::unix and std's libc has no bindings, so the utimes
+  backend does not compile.
+Rationale: read times from std::fs::Metadata and set them through
+  File::set_times (filetime's lib.rs already does); symlink times are
+  Unsupported as on x86_64 AROS. x86_64 AROS keeps the utimes backend.
+Upstream-status: local port, not submitted.
+Removal: when the aarch64 AROS std has the unix family or filetime has an
+  AROS backend.
+---
+diff --git a/src/aros_std.rs b/src/aros_std.rs
+--- a/src/aros_std.rs
++++ b/src/aros_std.rs
+@@ -0,0 +1,26 @@
++//! AROS targets whose std has no unix family (aarch64): file times through std only.
++use crate::FileTime;
++use std::fs;
++use std::io;
++use std::path::Path;
++
++pub fn set_symlink_file_times(_p: &Path, _atime: FileTime, _mtime: FileTime) -> io::Result<()> {
++    // An AmigaDOS link has no times of its own.
++    Err(io::Error::from(io::ErrorKind::Unsupported))
++}
++
++pub fn from_last_modification_time(meta: &fs::Metadata) -> FileTime {
++    meta.modified().map(FileTime::from).unwrap_or_else(|_| FileTime::zero())
++}
++
++pub fn from_last_access_time(meta: &fs::Metadata) -> FileTime {
++    meta.accessed().map(FileTime::from).unwrap_or_else(|_| FileTime::zero())
++}
++
++pub fn from_creation_time(meta: &fs::Metadata) -> Option<FileTime> {
++    meta.created().map(FileTime::from).ok()
++}
++
++pub fn open(path: &Path) -> io::Result<fs::File> {
++    fs::File::open(path).or_else(|_| fs::OpenOptions::new().write(true).open(path))
++}
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -47,6 +47,9 @@
+     } else if #[cfg(windows)] {
+         #[path = "windows.rs"]
+         mod imp;
++    } else if #[cfg(all(target_os = "aros", not(unix)))] {
++        #[path = "aros_std.rs"]
++        mod imp;
+     } else if #[cfg(all(target_family = "wasm", not(target_os = "emscripten")))] {
+         #[path = "wasm.rs"]
+         mod imp;

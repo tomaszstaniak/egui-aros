@@ -50,6 +50,8 @@ PTHREAD_LAYOUT_RASPI = {"sizeof(ThreadInfo)": 912, "offsetof(ThreadInfo, finishe
 GLUE_SOURCES = ("aros_fs_glue", "aros_thread_glue", "aros_sync_glue", "aros_env_glue",
                 "aros_process_glue", "aros_proc_glue", "aros_net_glue")
 
+# crates.io crates patched the same way for every Craft port (see crate_specs).
+SHARED_CRATES_DIR = Path(__file__).resolve().parent / "crates"
 # Set by configure() for the port being worked on; never derived from this file's location.
 REPO = UPSTREAMS = PORT = APP = SERIES_DIR = CRATES_DIR = LIBC_DIR = PTHREAD_DIR = GLUE_DIR = WORK = None
 # Test tools built with the same profile: name -> (manifest directory, binary).
@@ -286,13 +288,42 @@ def cmd_verify(args):
 
 
 def crate_specs():
-    return json.loads((CRATES_DIR / "crates.json").read_text())["crates"]
+    """The patched crates of the port: [(spec, directory of its patches)].
+
+    patches/crates/crates.json names crates of the shared set (crates/ beside this file) under
+    `shared`, as `<name>-<version>`, and the port's own under `crates`. Nothing is chosen
+    silently: a shared name that does not exist is an error, and so is a crate of the port's own
+    that the shared set also has, unless its entry says `"replaces_shared": true`."""
+    path = CRATES_DIR / "crates.json"
+    if not path.is_file():
+        return []
+    data = json.loads(path.read_text())
+    shared = {f"{s['name']}-{s['version']}": s for s in json.loads((SHARED_CRATES_DIR / "crates.json").read_text())["crates"]}
+    out, seen = [], set()
+    for key in data.get("shared", []):
+        if key not in shared:
+            raise Failure(f"{path}: `{key}` is not in the shared crate set ({', '.join(sorted(shared))})")
+        if key in seen:
+            raise Failure(f"{path}: `{key}` is named twice")
+        seen.add(key)
+        out.append((shared[key], SHARED_CRATES_DIR / key))
+    for spec in data.get("crates", []):
+        key = f"{spec['name']}-{spec['version']}"
+        if key in seen and not spec.get("replaces_shared"):
+            raise Failure(f"{path}: `{key}` is both under `shared` and the port's own")
+        if key in shared and key not in seen and not spec.get("replaces_shared"):
+            raise Failure(f"{path}: `{key}` is in the shared crate set; name it under `shared`, or mark the port's own "
+                          "entry `\"replaces_shared\": true`")
+        out = [(s, d) for s, d in out if f"{s['name']}-{s['version']}" != key]
+        seen.add(key)
+        out.append((spec, CRATES_DIR / key))
+    return out
 
 
 def cmd_crates(args, quiet=False):
     cfg = craftconfig.load(["cargo_home", "build_root"])
     out = {}
-    for spec in crate_specs():
+    for spec, patches in crate_specs():
         if spec.get("profiles") and cfg["profile"] not in spec["profiles"]:
             continue
         name = f"{spec['name']}-{spec['version']}"
@@ -308,8 +339,8 @@ def cmd_crates(args, quiet=False):
                 with tarfile.open(archives[0]) as tar:
                     tar.extractall(tmp, filter="data")
                 staged = Path(tmp) / name
-                for patch in (CRATES_DIR / name / "series").read_text().split():
-                    run(["patch", "--quiet", "-p1", "-i", CRATES_DIR / name / patch], cwd=staged)
+                for patch in (patches / "series").read_text().split():
+                    run(["patch", "--quiet", "-p1", "-i", patches / patch], cwd=staged)
                 got = tree_hash(staged)
                 if spec.get("tree_sha256") and got != spec["tree_sha256"]:
                     raise Failure(f"patched {name} tree {got} differs from the recorded {spec['tree_sha256']}")

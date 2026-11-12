@@ -1,0 +1,45 @@
+From: AROS Craft ports
+Subject: [PATCH] ring: AROS uses the Linux-ABI assembly and SystemRandom from getrandom
+
+Crate: ring 0.17.14 (crates.io).
+Date: 2026-11-07
+Problem: ring does not know AROS. Its build script then compiles no
+  assembly (the link misses the ChaCha20/AES/SHA routines) and SystemRandom
+  has no implementation, so rustls (the Craft font store's HTTPS) does not
+  build.
+Rationale: AROS x86_64 follows the System V AMD64 calling convention and
+  AROS on AArch64 AAPCS64, with ELF objects: the pregenerated ELF
+  assembly fits, as for the other systems in LINUX_ABI. getrandom 0.2 is
+  ring's existing random source on those systems; the Craft ports'
+  getrandom patch fills it from the C library's getentropy(), which fails
+  rather than returning weak bytes.
+Upstream-status: local (needs getrandom upstream AROS support first).
+Prerequisites: patches/crates/getrandom-0.2.17; C flags -fno-pic
+  -mcmodel=large on x86_64 (scripts/craft.py), matching the Rust profile.
+Limitations: the assembly addresses its constants RIP-relative across
+  sections, which AROS's loader may place apart; not observed to fail.
+Removal: when ring and getrandom support AROS.
+---
+diff --color -ru a/ring-0.17.14/build.rs b/ring-0.17.14/build.rs
+--- a/build.rs	2026-11-07 09:50:30
++++ b/build.rs	2026-11-07 09:50:31
+@@ -243,6 +243,8 @@
+ /// mentioned in `ASM_TARGETS`.
+ const LINUX_ABI: &[&str] = &[
+     "android",
++    // AROS: the System V AMD64 and AAPCS64 calling conventions, ELF objects.
++    "aros",
+     "dragonfly",
+     "freebsd",
+     "fuchsia",
+diff --color -ru a/ring-0.17.14/src/rand.rs b/ring-0.17.14/src/rand.rs
+--- a/src/rand.rs	2026-11-07 09:50:30
++++ b/src/rand.rs	2026-11-07 09:50:31
+@@ -126,6 +126,7 @@
+     all(feature = "less-safe-getrandom-espidf", target_os = "espidf"),
+     target_os = "aix",
+     target_os = "android",
++    target_os = "aros",
+     target_os = "dragonfly",
+     target_os = "freebsd",
+     target_os = "fuchsia",

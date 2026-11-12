@@ -92,6 +92,45 @@ class Config(Temp):
         self.assertIn("craft.py verify:", err.getvalue())
 
 
+class Crates(Temp):
+    def crates(self, grid, data):
+        (grid / "patches" / "crates").mkdir(exist_ok=True)
+        (grid / "patches" / "crates" / "crates.json").write_text(json.dumps(data))
+        craft.configure(grid)
+        return craft.crate_specs()
+
+    def test_a_port_names_the_shared_crates_it_uses(self):
+        grid = support.port(self.root, "gridcraft", "GridCraft", "GRIDCRAFT")
+        specs = self.crates(grid, {"shared": ["tar-0.4.46"], "crates": [{"name": "own", "version": "1.0.0"}]})
+        self.assertEqual([(s["name"], d) for s, d in specs],
+                         [("tar", support.TOOLS / "crates" / "tar-0.4.46"), ("own", grid / "patches" / "crates" / "own-1.0.0")])
+        self.assertTrue((specs[0][1] / "series").is_file())
+
+    def test_every_shared_crate_has_its_patches(self):
+        shared = json.loads((support.TOOLS / "crates" / "crates.json").read_text())["crates"]
+        self.assertTrue(shared)
+        for spec in shared:
+            directory = support.TOOLS / "crates" / f"{spec['name']}-{spec['version']}"
+            for patch in (directory / "series").read_text().split():
+                self.assertTrue((directory / patch).is_file(), patch)
+
+    def test_no_copy_wins_silently(self):
+        grid = support.port(self.root, "gridcraft", "GridCraft", "GRIDCRAFT")
+        with self.assertRaises(craft.Failure):
+            self.crates(grid, {"shared": ["tar-9.9.9"]})
+        with self.assertRaises(craft.Failure):
+            self.crates(grid, {"crates": [{"name": "tar", "version": "0.4.46"}]})
+        with self.assertRaises(craft.Failure):
+            self.crates(grid, {"shared": ["tar-0.4.46"], "crates": [{"name": "tar", "version": "0.4.46"}]})
+        specs = self.crates(grid, {"shared": ["tar-0.4.46"], "crates": [{"name": "tar", "version": "0.4.46", "replaces_shared": True}]})
+        self.assertEqual([d for _, d in specs], [grid / "patches" / "crates" / "tar-0.4.46"])
+
+    def test_a_port_without_patched_crates_has_none(self):
+        grid = support.port(self.root, "gridcraft", "GridCraft", "GRIDCRAFT")
+        craft.configure(grid)
+        self.assertEqual(craft.crate_specs(), [])
+
+
 class Package(Temp):
     def test_packaging_finds_each_ports_local_file_by_its_target(self):
         grid = support.port(self.root, "gridcraft", "GridCraft", "GRIDCRAFT")

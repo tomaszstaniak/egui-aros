@@ -1,0 +1,58 @@
+{
+  "comment": "crates.io crates the Craft ports build from a patched copy, kept once here. A port names the ones it uses under `shared` in its patches/crates/crates.json. checksum: the Cargo.lock checksum of the registry archive; tree_sha256: craft.py tree hash of the patched copy, recorded after review.",
+  "crates": [
+    {
+      "name": "rayon-core",
+      "version": "1.13.0",
+      "checksum": "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91",
+      "tree_sha256": "edf8afea24379d2b2b21f83d9e8666a8298b9855d97f58bfeb3555350a6c8200"
+    },
+    {
+      "name": "parking_lot_core",
+      "version": "0.9.12",
+      "checksum": "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1",
+      "tree_sha256": "ff637e8e25c844311983b6ee38b381681298d1004fd5c7bab5680e1fbff6481a",
+      "profiles": [
+        "v11"
+      ]
+    },
+    {
+      "name": "getrandom",
+      "version": "0.2.17",
+      "patch_key": "getrandom02",
+      "checksum": "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0",
+      "tree_sha256": "85a1f5a3d34c90d50b6e691d67a4d6f644432b683cb15f00387a6be1c0e71a8a"
+    },
+    {
+      "name": "getrandom",
+      "version": "0.3.4",
+      "patch_key": "getrandom03",
+      "checksum": "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd",
+      "tree_sha256": "30c2985c32756a9949ae099b7350352d9af1fee3dcb4aa3e11eb69d297c09bda"
+    },
+    {
+      "name": "getrandom",
+      "version": "0.4.3",
+      "patch_key": "getrandom04",
+      "checksum": "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099",
+      "tree_sha256": "f8df520b36c461ff55f5204e0816cdc706711a85709168b3b3ceec670b93e9b9"
+    },
+    {
+      "name": "filetime",
+      "version": "0.2.29",
+      "checksum": "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759",
+      "tree_sha256": "d2f6fe0f0d63aa74abc6b34fd1413650203a9e4b63a58bcbae9a70dca75c8490"
+    },
+    {
+      "name": "ring",
+      "version": "0.17.14",
+      "checksum": "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
+    },
+    {
+      "name": "tar",
+      "version": "0.4.46",
+      "checksum": "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840",
+      "tree_sha256": "38a1a9beeaafd8ae33bdad1f50e14e41e1edeea492c9711ebea607a7f7fb03d8"
+    }
+  ]
+}

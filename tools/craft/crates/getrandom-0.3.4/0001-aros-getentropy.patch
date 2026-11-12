@@ -1,0 +1,63 @@
+From: LightCraft AROS port
+Subject: [PATCH] getrandom 0.3.4: use matched rust-aros getentropy
+
+Why: the x86_64/v11 libc-aros profile provides serialized jitterentropy via
+getentropy, and AROS posixc exports it on every target; std's libc on
+aarch64 AROS has no bindings, so the function is declared here. Use bounded 256-byte calls and propagate failure; do not read
+uninitialized bytes, use time-based pseudo-randomness, or conflate the
+incompatible custom callback APIs of getrandom 0.2/0.3/0.4.
+Scope: AROS only, exact crates.io 0.3.4 archive/checksum in crates.json.
+Upstream-status: local port, not submitted.
+Verification: native compile/runtime pending; retain failure reporting.
+---
+diff --git a/Cargo.toml b/Cargo.toml
+index b85fdf6..e4af31c 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -131,3 +131,7 @@ check-cfg = [
+     "cfg(getrandom_test_netbsd_fallback)",
+     'cfg(target_os, values("cygwin"))',
+ ]
++
++[target.'cfg(target_os = "aros")'.dependencies.libc]
++version = "0.2.189"
++default-features = false
+diff --git a/src/backends.rs b/src/backends.rs
+index 991d413..9b78ffc 100644
+--- a/src/backends.rs
++++ b/src/backends.rs
+@@ -8,7 +8,10 @@
+ //! regardless of what value it returns.
+ 
+ cfg_if! {
+-    if #[cfg(getrandom_backend = "custom")] {
++    if #[cfg(target_os = "aros")] {
++        mod aros;
++        pub use aros::*;
++    } else if #[cfg(getrandom_backend = "custom")] {
+         mod custom;
+         pub use custom::*;
+     } else if #[cfg(getrandom_backend = "linux_getrandom")] {
+diff --git a/src/backends/aros.rs b/src/backends/aros.rs
+new file mode 100644
+index 0000000..a783f78
+--- /dev/null
++++ b/src/backends/aros.rs
+@@ -0,0 +1,17 @@
++use crate::Error;
++use core::mem::MaybeUninit;
++unsafe extern "C" {
++    // POSIX.1-2024; AROS posixc and the x86_64 libc-aros glue both provide it. Declared here
++    // because std's libc crate on aarch64 AROS carries no bindings.
++    fn getentropy(buffer: *mut core::ffi::c_void, length: usize) -> core::ffi::c_int;
++}
++pub use crate::util::{inner_u32, inner_u64};
++pub fn fill_inner(dest: &mut [MaybeUninit<u8>]) -> Result<(), Error> {
++    for chunk in dest.chunks_mut(256) {
++        // SAFETY: writable chunk; getentropy initializes every byte on success.
++        if unsafe { getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0 {
++            return Err(Error::new_custom(1));
++        }
++    }
++    Ok(())
++}

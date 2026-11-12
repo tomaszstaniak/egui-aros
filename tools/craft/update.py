@@ -62,13 +62,15 @@ def _dependencies(craft, repo, old, new):
                    "changed": {n: {"from": revs_before[n], "to": revs_after[n]} for n in revs_before
                                if n in revs_after and revs_before[n] != revs_after[n]}}
     crates = []
-    crates_json = craft.CRATES_DIR / "crates.json"
-    if crates_json.is_file():
-        for spec in json.loads(crates_json.read_text())["crates"]:
-            versions = after.get(spec["name"], [])
-            crates.append({"name": spec["name"], "version": spec["version"], "locked": spec["version"] in versions,
-                           "candidate_versions": versions})
-    return lock, {"changed": [n for n in changed.splitlines() if n]}, git_patches, crates
+    for spec, _ in craft.crate_specs():
+        versions = after.get(spec["name"], [])
+        crates.append({"name": spec["name"], "version": spec["version"], "locked": spec["version"] in versions,
+                       "candidate_versions": versions})
+    named = {(c["name"], c["version"]) for c in crates}
+    shared = json.loads((craft.SHARED_CRATES_DIR / "crates.json").read_text())["crates"]
+    unused = [f"{s['name']}-{s['version']}" for s in shared
+              if (s["name"], s["version"]) not in named and s["version"] in after.get(s["name"], [])]
+    return lock, {"changed": [n for n in changed.splitlines() if n]}, git_patches, crates, unused
 
 
 def _try_series(craft, trial):
@@ -125,7 +127,7 @@ def check(craft, commit, output, keep=None):
         craft.run(["git", "-C", trial, "-c", "advice.detachedHead=false", "checkout", "--quiet", "-b", "update-check", commit])
         between = int(craft.git(trial, "rev-list", "--count", f"{spec['commit']}..{commit}"))
         behind = int(craft.git(trial, "rev-list", "--count", f"{commit}..{spec['commit']}"))
-        lock, manifests, git_patches, crates = _dependencies(craft, trial, spec["commit"], commit)
+        lock, manifests, git_patches, crates, shared_unused = _dependencies(craft, trial, spec["commit"], commit)
         patches = _try_series(craft, trial)
         work = {"exists": craft.WORK.exists()}
         if work["exists"]:
@@ -145,6 +147,7 @@ def check(craft, commit, output, keep=None):
             "manifests": manifests,
             "git_patches": git_patches,
             "patched_crates": crates,
+            "shared_crates_locked_but_not_named": shared_unused,
             "work": work,
             "promoted": False,
             "tooling": craft.TOOLING,
@@ -181,5 +184,8 @@ def summary(report):
              for c in report["patched_crates"] if not c["locked"]]
     if stale:
         lines.append("  patched crates whose version the candidate does not lock: " + "; ".join(stale))
+    if report["shared_crates_locked_but_not_named"]:
+        lines.append("  the candidate locks crates the shared set patches, which this port does not name: "
+                     + ", ".join(report["shared_crates_locked_but_not_named"]))
     lines.append("  nothing was changed in the port; pins are promoted by hand after review")
     return "\n".join(lines)

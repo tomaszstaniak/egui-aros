@@ -9,6 +9,7 @@ One implementation of the workflow the Craft ports for AROS share: pinned upstre
 | `update.py` | `update-check` |
 | `package.py`, `icons.py` | `package binary` and `package source` |
 | `bootstrap.py` | what a port keeps as its `scripts/craft.py` |
+| `crates/` | crates.io crates patched for every port (see below) |
 | `tests/` | `python3 -m unittest discover -s tools/craft/tests` |
 
 ## What a port keeps
@@ -32,6 +33,19 @@ One implementation of the workflow the Craft ports for AROS share: pinned upstre
 The snapshot comes from the first of these that holds the commit: the checkout named by `CRAFT_TOOLING_SOURCE`; the checkout that the local file names under `local_key`; the `url`. With a local checkout no network is used.
 
 The tools take the port's repository from the bootstrap, never from their own location, so one snapshot directory can serve any port.
+
+## Patched crates
+
+`crates/` holds the crates.io crates every Craft port patches the same way, each with its registry checksum and the reviewed hash of the patched tree. A port's `patches/crates/crates.json` names the ones it uses and may add its own:
+
+```json
+{
+  "shared": ["getrandom-0.3.4", "tar-0.4.46"],
+  "crates": [{"name": "own-crate", "version": "1.0.0", "checksum": "..."}]
+}
+```
+
+Nothing is picked silently. A shared name that does not exist is an error. A crate of the port's own that the shared set also has is an error unless its entry says `"replaces_shared": true`. `update-check` lists shared crates that a candidate locks and the port does not name.
 
 ## Changing the pin
 
