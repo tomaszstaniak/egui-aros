@@ -72,7 +72,7 @@ TOOLING = None
 
 
 def configure(repo, tooling=None):
-    global REPO, PORT, APP, ID, LOCAL_VAR, WORK, SERIES, PACKAGING, BINARIES, TOOLING
+    global REPO, PORT, APP, ID, LOCAL_VAR, WORK, SERIES, PACKAGING, BINARIES, TOOLING, PACK_ADDED
     craftconfig.configure(repo)
     REPO = craftconfig.REPO
     PORT = craftconfig.PORT
@@ -83,6 +83,7 @@ def configure(repo, tooling=None):
     SERIES = REPO / "patches" / ID
     PACKAGING = REPO / "packaging"
     BINARIES = tuple(PORT["packages"].values())
+    PACK_ADDED = {".arospkg/manifest.toml", f"{APP}/application.json"}
     TOOLING = tooling
 
 
@@ -361,7 +362,8 @@ CATALOGUE = {"aros-x86_64-abiv11-pc": ("x86_64", "v11"), "aros-x86_64-abiv1-pc":
              "aros-aarch64-abiv1-raspi": ("aarch64", "v1")}
 # Written by apkg-pack: the description embedded for `apkg-pack submit`, and the launch record
 # for `apkg run` in an unpacked drawer.
-PACK_ADDED = {".arospkg/manifest.toml", f"{APP}/application.json"}
+# What apkg-pack adds to the archive; set by configure() (the app's drawer name is in it).
+PACK_ADDED = set()
 # The C runtime libraries an AROS program opens at start when it is linked against the C library
 # of its ABI. They differ between the ABIs and none exists on the other system, so a description
 # that names the wrong set makes apkg refuse the package on the system it was built for.

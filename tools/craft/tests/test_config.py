@@ -169,6 +169,7 @@ class Package(Temp):
         package.configure(grid)
         self.assertEqual(package.APP, "GridCraft")
         self.assertEqual(package.BINARIES, ("GridCraft", "gridcraft-cli"))
+        self.assertEqual(package.PACK_ADDED, {".arospkg/manifest.toml", "GridCraft/application.json"})
         self.assertEqual(package.config_for("aros-x86_64-abiv1-pc")["toolchain"], "grid-v1")
         self.assertEqual(package.config_for("aros-x86_64-abiv11-pc")["toolchain"], "grid-v11")
         self.assertNotIn("GRIDCRAFT_LOCAL", os.environ)
