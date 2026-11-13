@@ -87,6 +87,8 @@ pub struct PaintStats {
     pub kinds: [KindStats; 3],
     pub clear_us: u64,
     pub runs: u32,
+    /// Pixels written by the rectangle fill (also counted in the solid kind).
+    pub rect_pixels: u64,
 }
 
 pub struct Renderer {
@@ -198,7 +200,32 @@ impl Renderer {
             let measure = self.measure;
             // The current run of same-kind triangles and when it started.
             let mut run: Option<(Kind, std::time::Instant)> = None;
-            for tri in mesh.indices.chunks_exact(3) {
+            let mut tris = mesh.indices.chunks_exact(3).peekable();
+            while let Some(tri) = tris.next() {
+                // Two triangles that are the halves of one opaque, single-colour, axis-aligned
+                // rectangle (panel and cell backgrounds: most of what a frame paints) are filled
+                // as rows, with the pixels the two triangles would cover.
+                if let Some(next) = tris.peek() {
+                    if let Some(q) = opaque_quad(&mesh.vertices, tri, next, texture, pixels_per_point) {
+                        let started = measure.then(std::time::Instant::now);
+                        let n = fill_rect(&mut self.frame, self.width, [x0, y0, x1, y1], &q);
+                        if let Some(t) = started {
+                            // Closes a run of another kind; the fill is timed on its own.
+                            if let Some((k, t0)) = run.take() {
+                                self.stats.kinds[k as usize].us += (t - t0).as_micros() as u64;
+                            }
+                            let st = &mut self.stats.kinds[Kind::Solid as usize];
+                            st.triangles += 2;
+                            st.visited += n;
+                            st.covered += n;
+                            st.opaque += n;
+                            st.us += t.elapsed().as_micros() as u64;
+                            self.stats.rect_pixels += n;
+                        }
+                        tris.next();
+                        continue;
+                    }
+                }
                 let (Some(a), Some(b), Some(c)) =
                     (mesh.vertices.get(tri[0] as usize), mesh.vertices.get(tri[1] as usize), mesh.vertices.get(tri[2] as usize))
                 else {
@@ -231,6 +258,88 @@ impl Renderer {
             }
         }
     }
+}
+
+/// An opaque axis-aligned rectangle in pixel coordinates and its colour.
+struct Quad {
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    rgba: [u8; 4],
+}
+
+/// The rectangle two consecutive triangles make, when they are its two halves, of one colour,
+/// sample one texel (egui's fills) and the result is opaque. The colour is computed as
+/// `triangle` computes it.
+fn opaque_quad(vertices: &[Vertex], t0: &[u32], t1: &[u32], texture: Option<&Texture>, ppp: f32) -> Option<Quad> {
+    let v = |i: u32| vertices.get(i as usize);
+    let (a, b, c) = (v(t0[0])?, v(t0[1])?, v(t0[2])?);
+    let (d, e, f) = (v(t1[0])?, v(t1[1])?, v(t1[2])?);
+    let all = [a, b, c, d, e, f];
+    if all.iter().any(|q| q.color != a.color || q.uv != a.uv) {
+        return None;
+    }
+    let (mut x0, mut x1, mut y0, mut y1) = (a.pos.x, a.pos.x, a.pos.y, a.pos.y);
+    for q in all {
+        x0 = x0.min(q.pos.x);
+        x1 = x1.max(q.pos.x);
+        y0 = y0.min(q.pos.y);
+        y1 = y1.max(q.pos.y);
+    }
+    if !(x0 < x1 && y0 < y1) || !x0.is_finite() || !x1.is_finite() || !y0.is_finite() || !y1.is_finite() {
+        return None;
+    }
+    // Every vertex is a corner, each triangle has three different corners, and together they
+    // have all four: the two halves of the rectangle, split along either diagonal.
+    let corner = |q: &Vertex| -> Option<u8> {
+        let x = if q.pos.x == x0 { 0 } else if q.pos.x == x1 { 1 } else { return None };
+        let y = if q.pos.y == y0 { 0 } else if q.pos.y == y1 { 2 } else { return None };
+        Some(1 << (x + y))
+    };
+    let (ca, cb, cc) = (corner(a)?, corner(b)?, corner(c)?);
+    let (cd, ce, cf) = (corner(d)?, corner(e)?, corner(f)?);
+    let (m0, m1) = (ca | cb | cc, cd | ce | cf);
+    if m0.count_ones() != 3 || m1.count_ones() != 3 || m0 | m1 != 0b1111 || m0 == m1 {
+        return None;
+    }
+    let col = a.color.to_array();
+    let color = [col[0] as f32, col[1] as f32, col[2] as f32, col[3] as f32];
+    let src = match texture {
+        Some(t) => {
+            let s = t.sample(a.uv.x, a.uv.y);
+            [color[0] * s[0] / 255.0, color[1] * s[1] / 255.0, color[2] * s[2] / 255.0, color[3] * s[3] / 255.0]
+        }
+        None => color,
+    };
+    if src[3] < 254.5 {
+        return None;
+    }
+    Some(Quad { x0: x0 * ppp, y0: y0 * ppp, x1: x1 * ppp, y1: y1 * ppp, rgba: [src[0] as u8, src[1] as u8, src[2] as u8, 255] })
+}
+
+/// Fills the pixels whose centres lie inside the rectangle, left and top edges included, right
+/// and bottom excluded (the rule `triangle` follows), within the clip box. Returns the count.
+fn fill_rect(frame: &mut [u8], width: usize, clip: [i32; 4], q: &Quad) -> u64 {
+    // The first pixel whose centre (n + 0.5) is at or after the edge.
+    let first = |edge: f32| (edge - 0.5).ceil() as i32;
+    let xa = first(q.x0).max(clip[0]);
+    let xb = first(q.x1).min(clip[2]);
+    let ya = first(q.y0).max(clip[1]);
+    let yb = first(q.y1).min(clip[3]);
+    if xa >= xb || ya >= yb {
+        return 0;
+    }
+    for py in ya..yb {
+        let start = (py as usize * width + xa as usize) * 4;
+        let end = (py as usize * width + xb as usize) * 4;
+        if let Some(row) = frame.get_mut(start..end) {
+            for px in row.chunks_exact_mut(4) {
+                px.copy_from_slice(&q.rgba);
+            }
+        }
+    }
+    (xb - xa) as u64 * (yb - ya) as u64
 }
 
 /// Rasterizes one triangle into `frame` within the clip box (pixel units, max exclusive).
@@ -496,6 +605,80 @@ mod tests {
             }
         }
         assert!(checked > 100_000, "{checked}");
+    }
+
+    /// The rectangle fill writes exactly the pixels the two triangles write, with the same
+    /// colour, for rectangles at whole, half and arbitrary coordinates, split along either
+    /// diagonal, in any vertex order, inside a clip box.
+    #[test]
+    fn rect_fill_matches_the_two_triangles() {
+        use egui::epaint::{Color32, Pos2};
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let (w, h) = (96usize, 80usize);
+        let mut filled = 0u64;
+        for case in 0..6000 {
+            // Coordinates on a grid of 1, 1/2 or 1/8 pixel, or arbitrary.
+            let mut coord = |range: u64| match case % 4 {
+                0 => rnd(range) as f32,
+                1 => rnd(range * 2) as f32 * 0.5,
+                2 => rnd(range * 8) as f32 * 0.125,
+                // Never exactly on a pixel centre: there the triangles' accumulated rounding
+                // decides, while the fill applies the rule exactly (the grids above are exact).
+                _ => rnd(range * 1000) as f32 / 1000.0 + 0.0003,
+            };
+            let (xa, xb, ya, yb) = (coord(100) - 4.0, coord(100) - 4.0, coord(84) - 4.0, coord(84) - 4.0);
+            let (x0, x1, y0, y1) = (xa.min(xb), xa.max(xb), ya.min(yb), ya.max(yb));
+            let color = Color32::from_rgb(rnd(256) as u8, rnd(256) as u8, rnd(256) as u8);
+            let v = |x: f32, y: f32| Vertex { pos: Pos2::new(x, y), uv: Pos2::ZERO, color };
+            let corners = [v(x0, y0), v(x1, y0), v(x1, y1), v(x0, y1)];
+            let mut order = match rnd(4) {
+                0 => [0u32, 1, 2, 0, 2, 3],
+                1 => [1, 2, 3, 1, 3, 0],
+                2 => [2, 1, 0, 3, 2, 0],
+                _ => [0, 2, 1, 2, 0, 3],
+            };
+            order[..3].rotate_left(rnd(3) as usize);
+            order[3..].rotate_left(rnd(3) as usize);
+            let clip = [rnd(20) as i32, rnd(20) as i32, w as i32 - rnd(20) as i32, h as i32 - rnd(20) as i32];
+            let mut by_triangles = vec![7u8; w * h * 4];
+            for t in order.chunks_exact(3) {
+                triangle(&mut by_triangles, w, clip, 1.0, None, &corners[t[0] as usize], &corners[t[1] as usize], &corners[t[2] as usize], None);
+            }
+            let mut by_fill = vec![7u8; w * h * 4];
+            match opaque_quad(&corners, &order[..3], &order[3..], None, 1.0) {
+                Some(q) => filled += fill_rect(&mut by_fill, w, clip, &q),
+                None => {
+                    assert!(x0 == x1 || y0 == y1, "case {case}: a rectangle was not recognised");
+                    continue;
+                }
+            }
+            assert!(by_triangles == by_fill, "case {case}: {x0},{y0} - {x1},{y1} clip {clip:?} order {order:?}");
+        }
+        assert!(filled > 1_000_000, "{filled}");
+    }
+
+    /// Triangle pairs that are not one opaque rectangle keep the general path.
+    #[test]
+    fn other_pairs_are_not_taken_for_rectangles() {
+        use egui::epaint::{Color32, Pos2};
+        let v = |x: f32, y: f32, color: Color32| Vertex { pos: Pos2::new(x, y), uv: Pos2::ZERO, color };
+        let red = Color32::RED;
+        let quad = |c: [Color32; 4], p: [(f32, f32); 4]| [v(p[0].0, p[0].1, c[0]), v(p[1].0, p[1].1, c[1]), v(p[2].0, p[2].1, c[2]), v(p[3].0, p[3].1, c[3])];
+        let square = [(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)];
+        let is_quad = |vs: &[Vertex], i: [u32; 6]| opaque_quad(vs, &i[..3], &i[3..], None, 1.0).is_some();
+        assert!(is_quad(&quad([red; 4], square), [0, 1, 2, 0, 2, 3]));
+        // Translucent, a gradient, a slanted quad, the same half twice, a triangle and a sliver.
+        assert!(!is_quad(&quad([Color32::from_rgba_premultiplied(9, 0, 0, 100); 4], square), [0, 1, 2, 0, 2, 3]));
+        assert!(!is_quad(&quad([red, red, Color32::BLUE, red], square), [0, 1, 2, 0, 2, 3]));
+        assert!(!is_quad(&quad([red; 4], [(0.0, 0.0), (8.0, 1.0), (8.0, 8.0), (0.0, 8.0)]), [0, 1, 2, 0, 2, 3]));
+        assert!(!is_quad(&quad([red; 4], square), [0, 1, 2, 2, 0, 1]));
+        assert!(!is_quad(&quad([red; 4], square), [0, 1, 2, 0, 1, 1]));
     }
 
     /// Two triangles sharing an edge (a quad split along its diagonal, and a fan) cover every
