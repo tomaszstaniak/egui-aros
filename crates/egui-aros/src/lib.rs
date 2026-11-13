@@ -45,6 +45,8 @@ mod sys {
     use std::ffi::c_char;
     extern "C" {
         pub fn ea_present(win: *mut std::ffi::c_void, rgba: *const u8, width: i32, height: i32, stride: i32);
+        #[allow(clippy::too_many_arguments)]
+        pub fn ea_present_rect(win: *mut std::ffi::c_void, rgba: *const u8, width: i32, height: i32, stride: i32, x: i32, y: i32, w: i32, h: i32);
         pub fn ea_set_busy(win: *mut std::ffi::c_void, busy: i32);
         #[cfg_attr(not(feature = "asl"), allow(dead_code))]
         pub fn ea_file_request(
@@ -439,6 +441,10 @@ pub struct FrameReport {
     pub textures: Duration,
     pub raster: Duration,
     pub present: Duration,
+    /// CPU renderer: the frame's tiles ([`raster::TILE`] pixels square) and how many of them had
+    /// changed and were painted again; both 0 with OpenGL.
+    pub tiles: u32,
+    pub tiles_repainted: u32,
     pub vertices: u32,
     pub texture_pixels: u64,
     /// The next repaint egui asked for, if any (`Duration::ZERO`: at once).
@@ -627,6 +633,10 @@ struct Runner<'a> {
     slept_since: Instant,
     /// A redraw is pending in winit's queue.
     redraw_queued: bool,
+    /// The next frame copies the whole picture to the window, not only what it repainted:
+    /// at the start, and after anything but pointer and key input (a resize, the window
+    /// uncovered or activated, a redraw the system asked for).
+    present_all: bool,
     /// The last sleep's timeout and what ended it.
     wait_timeout: Option<Duration>,
     woke_by_timeout: bool,
@@ -820,6 +830,7 @@ impl Runner<'_> {
         #[cfg(not(feature = "glow"))]
         let gl_frame = false;
         let (uploaded, rasterized);
+        let mut changed = raster::Changed::default();
         if gl_frame {
             #[cfg(feature = "glow")]
             {
@@ -846,12 +857,17 @@ impl Runner<'_> {
             }
             r.renderer.update_textures(&textures_delta);
             uploaded = Instant::now();
-            r.renderer.clear(self.options.clear_color);
-            r.renderer.paint(&primitives, out.pixels_per_point);
+            changed = r.renderer.paint_changed(self.options.clear_color, &primitives, out.pixels_per_point);
             r.renderer.free_textures(&textures_delta);
             textures_delta.clear();
             rasterized = Instant::now();
-            present(&r.window, &r.renderer);
+            let all = std::mem::take(&mut self.present_all) || changed.repainted == changed.tiles;
+            match (all, changed.rect) {
+                (true, _) => present(&r.window, &r.renderer, None),
+                (false, Some(rect)) => present(&r.window, &r.renderer, Some(rect)),
+                // Nothing changed: the window already shows this picture.
+                (false, None) => {}
+            }
         }
         let shown = Instant::now();
         let shown_us = clock_us();
@@ -887,6 +903,8 @@ impl Runner<'_> {
                 .sum(),
             texture_pixels,
             next_repaint,
+            tiles: changed.tiles,
+            tiles_repainted: changed.repainted,
         };
         self.app.frame_done(&report, &r.renderer);
         closing || self.app.quit_requested()
@@ -904,7 +922,8 @@ impl Runner<'_> {
     }
 }
 
-fn present(window: &Window, renderer: &raster::Renderer) {
+/// Copies the frame, or the part of it in `rect` (x0, y0, x1, y1), to the window.
+fn present(window: &Window, renderer: &raster::Renderer, rect: Option<[u32; 4]>) {
     #[cfg(target_os = "aros")]
     {
         use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
@@ -913,19 +932,32 @@ fn present(window: &Window, renderer: &raster::Renderer) {
                 // SAFETY: the window is open (we hold it) and the frame is width x height RGBA
                 // with the given stride.
                 unsafe {
-                    sys::ea_present(
-                        h.window.as_ptr(),
-                        renderer.frame.as_ptr(),
-                        renderer.width as i32,
-                        renderer.height as i32,
-                        renderer.stride() as i32,
-                    )
+                    match rect {
+                        None => sys::ea_present(
+                            h.window.as_ptr(),
+                            renderer.frame.as_ptr(),
+                            renderer.width as i32,
+                            renderer.height as i32,
+                            renderer.stride() as i32,
+                        ),
+                        Some([x0, y0, x1, y1]) => sys::ea_present_rect(
+                            h.window.as_ptr(),
+                            renderer.frame.as_ptr(),
+                            renderer.width as i32,
+                            renderer.height as i32,
+                            renderer.stride() as i32,
+                            x0 as i32,
+                            y0 as i32,
+                            (x1 - x0) as i32,
+                            (y1 - y0) as i32,
+                        ),
+                    }
                 };
             }
         }
     }
     #[cfg(not(target_os = "aros"))]
-    let _ = (window, renderer);
+    let _ = (window, renderer, rect);
 }
 
 impl Runner<'_> {
@@ -963,6 +995,9 @@ impl Runner<'_> {
         }
         match event {
             WindowEvent::RedrawRequested => {
+                if !self.redraw_queued {
+                    self.present_all = true;
+                }
                 self.redraw_queued = false;
                 if self.frame() {
                     self.close(event_loop);
@@ -986,6 +1021,9 @@ impl Runner<'_> {
                 };
                 let Some(r) = self.running.as_mut() else { return };
                 let response = r.state.on_window_event(&r.window, &event);
+                if kind.is_none() {
+                    self.present_all = true;
+                }
                 if let Some(kind) = kind {
                     r.kinds[kind] += 1;
                     r.events = Some(r.events.map_or((now, now, 1), |(old, new, n)| (old.min(now), new.max(now), n + 1)));
@@ -1108,6 +1146,7 @@ pub fn run(options: Options, ctx: egui::Context, app: &mut dyn App) -> Result<()
         frames: 0,
         slept_since: now,
         redraw_queued: false,
+        present_all: true,
         wait_timeout: None,
         woke_by_timeout: false,
         due_taken: None,
