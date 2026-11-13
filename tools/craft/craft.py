@@ -827,7 +827,9 @@ def cmd_build(args):
     release_json = json.loads((REPO / "packaging" / "release.json").read_text())
     release_name = release_json["release"]
     shown = shown_release(release_json)
-    env = dict(os.environ, **{PORT["env_prefix"] + "_BUILD_TARGET": cfg["target"], PORT["env_prefix"] + "_RELEASE": shown},
+    env = dict(os.environ, **{PORT["env_prefix"] + "_BUILD_TARGET": cfg["target"], PORT["env_prefix"] + "_RELEASE": shown,
+                              # For the shared crates (egui-aros narrows AUTO per target).
+                              "CRAFT_BUILD_TARGET": cfg["target"]},
                CARGO_HOME=cfg["cargo_home"], CARGO_TARGET_DIR=str(root / "target"),
                AROS_CC=cfg["aros_gcc"], AROS_GCC=cfg["aros_gcc"], AROS_AR=cfg["aros_ar"], AROS_SDK=cfg["aros_sdk"])
     # C code built by cc-rs (ring, for the font store's HTTPS) uses the target's AROS compiler and

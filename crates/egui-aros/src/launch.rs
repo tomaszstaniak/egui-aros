@@ -109,11 +109,36 @@ pub fn choose(args: &mut Vec<String>, tooltypes: &[String], env: Option<&str>, d
 /// OpenGL is unverified on hardware, and under emulation (Mesa's software rasterizer, no
 /// VideoCore) it stopped the whole system (VectorCraft, 2026-10-28); GPU, asked for by name,
 /// still tries it.
+///
+/// On mainline x86_64 AROS (nightly 2026-11-10, Mesa 26.2.5) a program that has opened OpenGL,
+/// even only to look at it, leaves its C runtime behind when it ends: its log file stays in
+/// use and the Shell it ran in no longer redirects the output of later programs (CADCraft,
+/// 2026-11-13; not so with the CPU renderer, and not on ABIv11). The Craft tools name the
+/// target in `CRAFT_BUILD_TARGET` when they build.
 pub const AUTO_SKIPS_GL: Option<&str> = if cfg!(target_arch = "aarch64") {
     Some("OpenGL on the Raspberry Pi is not verified on Pi hardware; choose GPU to try it")
+} else if built_for("aros-x86_64-abiv1-pc") {
+    Some("on mainline x86_64 AROS a program that opened OpenGL leaves files in use after it ends; choose GPU to use OpenGL")
 } else {
     None
 };
+
+/// Whether the Craft tools built this crate for `target`.
+const fn built_for(target: &str) -> bool {
+    let Some(built) = option_env!("CRAFT_BUILD_TARGET") else { return false };
+    let (a, b) = (built.as_bytes(), target.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
 /// The request to pass to [`crate::run`] for `choice`, and the reason when AUTO is narrowed to
 /// the CPU before any OpenGL is touched.
