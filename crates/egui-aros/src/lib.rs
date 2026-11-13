@@ -439,6 +439,10 @@ pub struct FrameReport {
     pub textures: Duration,
     pub raster: Duration,
     pub present: Duration,
+    /// CPU renderer: the frame's tiles ([`raster::TILE`] pixels square) and how many of them had
+    /// changed and were painted again; both 0 with OpenGL.
+    pub tiles: u32,
+    pub tiles_repainted: u32,
     pub vertices: u32,
     pub texture_pixels: u64,
     /// The next repaint egui asked for, if any (`Duration::ZERO`: at once).
@@ -820,6 +824,7 @@ impl Runner<'_> {
         #[cfg(not(feature = "glow"))]
         let gl_frame = false;
         let (uploaded, rasterized);
+        let mut changed = raster::Changed::default();
         if gl_frame {
             #[cfg(feature = "glow")]
             {
@@ -846,8 +851,7 @@ impl Runner<'_> {
             }
             r.renderer.update_textures(&textures_delta);
             uploaded = Instant::now();
-            r.renderer.clear(self.options.clear_color);
-            r.renderer.paint(&primitives, out.pixels_per_point);
+            changed = r.renderer.paint_changed(self.options.clear_color, &primitives, out.pixels_per_point);
             r.renderer.free_textures(&textures_delta);
             textures_delta.clear();
             rasterized = Instant::now();
@@ -887,6 +891,8 @@ impl Runner<'_> {
                 .sum(),
             texture_pixels,
             next_repaint,
+            tiles: changed.tiles,
+            tiles_repainted: changed.repainted,
         };
         self.app.frame_done(&report, &r.renderer);
         closing || self.app.quit_requested()

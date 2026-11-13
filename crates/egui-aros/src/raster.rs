@@ -100,11 +100,41 @@ pub struct Renderer {
     pub frame: Vec<u8>,
     pub width: usize,
     pub height: usize,
+    /// What each [`TILE`]-pixel tile of `frame` shows, as a hash of everything painted into it by
+    /// the last [`Renderer::paint_changed`]; empty when `frame` is not known to match (new size,
+    /// or painted by `clear` and `paint`).
+    tiles: Vec<u64>,
+    /// Counts a texture's uploads, so that tiles showing it change when its pixels do.
+    texture_versions: HashMap<TextureId, u64>,
+    uploads: u64,
+    /// Reused between frames: per triangle, the tiles its clipped bounding box touches.
+    spans: Vec<[u16; 4]>,
+}
+
+/// Side of the squares `paint_changed` compares and repaints, in pixels.
+pub const TILE: usize = 64;
+
+/// What [`Renderer::paint_changed`] did.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Changed {
+    pub tiles: u32,
+    pub repainted: u32,
 }
 
 impl Renderer {
     pub fn new(width: usize, height: usize) -> Self {
-        let mut r = Self { textures: HashMap::new(), stats: PaintStats::default(), measure: false, frame: Vec::new(), width: 0, height: 0 };
+        let mut r = Self {
+            textures: HashMap::new(),
+            stats: PaintStats::default(),
+            measure: false,
+            frame: Vec::new(),
+            width: 0,
+            height: 0,
+            tiles: Vec::new(),
+            texture_versions: HashMap::new(),
+            uploads: 0,
+            spans: Vec::new(),
+        };
         r.resize(width, height);
         r
     }
@@ -115,6 +145,7 @@ impl Renderer {
             self.width = width;
             self.height = height;
             self.frame = vec![0; width * height * 4];
+            self.tiles.clear();
         }
     }
 
@@ -123,6 +154,8 @@ impl Renderer {
     }
 
     pub fn clear(&mut self, rgb: [u8; 3]) {
+        // The frame no longer shows what the tile hashes describe.
+        self.tiles.clear();
         let started = self.measure.then(std::time::Instant::now);
         for px in self.frame.chunks_exact_mut(4) {
             px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
@@ -136,6 +169,8 @@ impl Renderer {
     /// Applies the frame's texture uploads (before painting).
     pub fn update_textures(&mut self, delta: &TexturesDelta) {
         for (id, deltas) in &delta.set {
+            self.uploads += 1;
+            self.texture_versions.insert(*id, self.uploads);
             for d in deltas {
                 self.set_texture(*id, d);
             }
@@ -152,6 +187,7 @@ impl Renderer {
     pub fn free_textures(&mut self, delta: &TexturesDelta) {
         for id in &delta.free {
             self.textures.remove(id);
+            self.texture_versions.remove(id);
         }
     }
 
@@ -182,6 +218,173 @@ impl Renderer {
                 }
             }
         }
+    }
+
+    /// `clear` and `paint` for the parts of the frame that differ from what it already shows:
+    /// the frame is divided into [`TILE`]-pixel tiles, each tile's content is identified by a
+    /// hash of the triangles (positions, colours, texture and its upload count, clip) that reach
+    /// it, in order, and only tiles whose hash changed since the previous call are cleared and
+    /// painted again. A frame that repeats the previous one costs the hashing only. With
+    /// `measure` set, or after a resize, everything is painted.
+    pub fn paint_changed(&mut self, rgb: [u8; 3], primitives: &[ClippedPrimitive], pixels_per_point: f32) -> Changed {
+        let (tw, th) = (self.width.div_ceil(TILE), self.height.div_ceil(TILE));
+        let total = (tw * th) as u32;
+        if self.measure || tw > u16::MAX as usize || th > u16::MAX as usize {
+            self.clear(rgb);
+            self.paint(primitives, pixels_per_point);
+            return Changed { tiles: total, repainted: total };
+        }
+        const K: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mix = |h: u64, v: u64| (h.rotate_left(5) ^ v).wrapping_mul(K);
+        let seed = mix(mix(u32::from_le_bytes([rgb[0], rgb[1], rgb[2], 0]) as u64, pixels_per_point.to_bits() as u64), self.width as u64);
+        let mut now = vec![seed; tw * th];
+        let mut spans = std::mem::take(&mut self.spans);
+        spans.clear();
+        const NONE: [u16; 4] = [u16::MAX; 4];
+        // The pixel clip box of a primitive, as `paint` computes it.
+        let (fw, fh) = (self.width as i32, self.height as i32);
+        let clip_box = |p: &ClippedPrimitive| {
+            let c = p.clip_rect;
+            [
+                ((c.min.x * pixels_per_point).floor() as i32).max(0),
+                ((c.min.y * pixels_per_point).floor() as i32).max(0),
+                ((c.max.x * pixels_per_point).ceil() as i32).min(fw),
+                ((c.max.y * pixels_per_point).ceil() as i32).min(fh),
+            ]
+        };
+        for p in primitives {
+            let Primitive::Mesh(mesh) = &p.primitive else { continue };
+            let clip = clip_box(p);
+            let empty = clip[2] <= clip[0] || clip[3] <= clip[1];
+            let texture = match mesh.texture_id {
+                TextureId::Managed(n) => n << 1,
+                TextureId::User(n) => (n << 1) | 1,
+            };
+            let version = self.texture_versions.get(&mesh.texture_id).copied().unwrap_or(0);
+            let base = mix(mix(mix(mix(texture, version), (clip[0] as u64) << 32 | clip[1] as u64), (clip[2] as u64) << 32 | clip[3] as u64), 1);
+            for tri in mesh.indices.chunks_exact(3) {
+                let (Some(a), Some(b), Some(c)) =
+                    (mesh.vertices.get(tri[0] as usize), mesh.vertices.get(tri[1] as usize), mesh.vertices.get(tri[2] as usize))
+                else {
+                    spans.push(NONE);
+                    continue;
+                };
+                if empty {
+                    spans.push(NONE);
+                    continue;
+                }
+                // The bounding box `triangle` rasterizes within.
+                let ppp = pixels_per_point;
+                let min_x = ((a.pos.x.min(b.pos.x).min(c.pos.x) * ppp).floor() as i32).max(clip[0]);
+                let max_x = ((a.pos.x.max(b.pos.x).max(c.pos.x) * ppp).ceil() as i32).min(clip[2]);
+                let min_y = ((a.pos.y.min(b.pos.y).min(c.pos.y) * ppp).floor() as i32).max(clip[1]);
+                let max_y = ((a.pos.y.max(b.pos.y).max(c.pos.y) * ppp).ceil() as i32).min(clip[3]);
+                if min_x >= max_x || min_y >= max_y {
+                    spans.push(NONE);
+                    continue;
+                }
+                let span = [min_x as usize / TILE, min_y as usize / TILE, (max_x as usize - 1) / TILE, (max_y as usize - 1) / TILE];
+                let mut h = base;
+                for v in [a, b, c] {
+                    h = mix(h, (v.pos.x.to_bits() as u64) << 32 | v.pos.y.to_bits() as u64);
+                    h = mix(h, (v.uv.x.to_bits() as u64) << 32 | v.uv.y.to_bits() as u64);
+                    h = mix(h, u32::from_le_bytes(v.color.to_array()) as u64);
+                }
+                for ty in span[1]..=span[3] {
+                    for t in &mut now[ty * tw + span[0]..=ty * tw + span[2]] {
+                        *t = mix(*t, h);
+                    }
+                }
+                spans.push([span[0] as u16, span[1] as u16, span[2] as u16, span[3] as u16]);
+            }
+        }
+        let known = self.tiles.len() == now.len();
+        let dirty: Vec<bool> = now.iter().enumerate().map(|(i, h)| !known || self.tiles[i] != *h).collect();
+        let repainted = dirty.iter().filter(|d| **d).count() as u32;
+        if repainted == 0 {
+            self.spans = spans;
+            return Changed { tiles: total, repainted: 0 };
+        }
+        // Per tile row, the runs of changed tiles as pixel ranges; cleared, then painted.
+        let mut runs: Vec<Vec<(i32, i32)>> = vec![Vec::new(); th];
+        for ty in 0..th {
+            let mut tx = 0;
+            while tx < tw {
+                if dirty[ty * tw + tx] {
+                    let from = tx;
+                    while tx < tw && dirty[ty * tw + tx] {
+                        tx += 1;
+                    }
+                    runs[ty].push(((from * TILE) as i32, (tx * TILE).min(self.width) as i32));
+                } else {
+                    tx += 1;
+                }
+            }
+            let (ya, yb) = (ty * TILE, ((ty + 1) * TILE).min(self.height));
+            for &(xa, xb) in &runs[ty] {
+                for y in ya..yb {
+                    let row = y * self.width;
+                    if let Some(px) = self.frame.get_mut((row + xa as usize) * 4..(row + xb as usize) * 4) {
+                        for px in px.chunks_exact_mut(4) {
+                            px.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+                        }
+                    }
+                }
+            }
+        }
+        let mut n = 0usize;
+        for p in primitives {
+            let Primitive::Mesh(mesh) = &p.primitive else { continue };
+            let clip = clip_box(p);
+            let texture = self.textures.get(&mesh.texture_id);
+            let count = mesh.indices.len() / 3;
+            let mut i = 0;
+            while i < count {
+                let span = spans[n + i];
+                i += 1;
+                if span == NONE {
+                    continue;
+                }
+                let [sx0, sy0, sx1, sy1] = [span[0] as usize, span[1] as usize, span[2] as usize, span[3] as usize];
+                // Most triangles lie in one tile.
+                if sx0 == sx1 && sy0 == sy1 && !dirty[sy0 * tw + sx0] {
+                    continue;
+                }
+                let tri = &mesh.indices[(i - 1) * 3..i * 3];
+                let (a, b, c) = (&mesh.vertices[tri[0] as usize], &mesh.vertices[tri[1] as usize], &mesh.vertices[tri[2] as usize]);
+                // The other half of a rectangle has the same tiles: both are done here.
+                let quad = if i < count && spans[n + i] == span {
+                    opaque_quad(&mesh.vertices, tri, &mesh.indices[i * 3..i * 3 + 3], texture, pixels_per_point)
+                } else {
+                    None
+                };
+                if quad.is_some() {
+                    i += 1;
+                }
+                for ty in sy0..=sy1 {
+                    let (ya, yb) = ((ty * TILE) as i32, ((ty + 1) * TILE) as i32);
+                    for &(xa, xb) in &runs[ty] {
+                        if xb <= (sx0 * TILE) as i32 || xa >= ((sx1 + 1) * TILE) as i32 {
+                            continue;
+                        }
+                        let part = [clip[0].max(xa), clip[1].max(ya), clip[2].min(xb), clip[3].min(yb)];
+                        if part[0] >= part[2] || part[1] >= part[3] {
+                            continue;
+                        }
+                        match &quad {
+                            Some(q) => {
+                                fill_rect(&mut self.frame, self.width, part, q);
+                            }
+                            None => triangle(&mut self.frame, self.width, part, pixels_per_point, texture, a, b, c, None),
+                        }
+                    }
+                }
+            }
+            n += count;
+        }
+        self.tiles = now;
+        self.spans = spans;
+        Changed { tiles: total, repainted }
     }
 
     pub fn paint(&mut self, primitives: &[ClippedPrimitive], pixels_per_point: f32) {
@@ -661,6 +864,81 @@ mod tests {
             assert!(by_triangles == by_fill, "case {case}: {x0},{y0} - {x1},{y1} clip {clip:?} order {order:?}");
         }
         assert!(filled > 1_000_000, "{filled}");
+    }
+
+    /// A sequence of frames, each changing a few shapes of the previous one: painting only the
+    /// changed tiles gives the picture a full repaint gives, and repaints fewer tiles. The two
+    /// may differ by rounding where a triangle is cut at a tile edge (its edge functions are
+    /// accumulated from another start), so single levels of a channel are allowed.
+    #[test]
+    fn changed_tiles_give_the_full_picture() {
+        use egui::epaint::{Color32, Mesh, Pos2, Rect};
+        let mut seed = 0x1234_5678_9abc_def1u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let (w, h) = (300usize, 200usize);
+        // Shapes: (is rectangle, corner points, colour).
+        let shape = |rnd: &mut dyn FnMut(u64) -> u64| {
+            let p = |rnd: &mut dyn FnMut(u64) -> u64| Pos2::new(rnd(2600) as f32 / 8.0 - 10.0, rnd(1800) as f32 / 8.0 - 10.0);
+            let a = if rnd(3) == 0 { 255 } else { rnd(255) as u8 };
+            let color = Color32::from_rgba_premultiplied((rnd(256) * a as u64 / 255) as u8, (rnd(256) * a as u64 / 255) as u8, (rnd(256) * a as u64 / 255) as u8, a);
+            (rnd(2) == 0, [p(rnd), p(rnd), p(rnd)], color, rnd(4) == 0)
+        };
+        let mut shapes: Vec<_> = (0..120).map(|_| shape(&mut rnd)).collect();
+        let build = |shapes: &[(bool, [Pos2; 3], Color32, bool)]| {
+            let mut out = Vec::new();
+            for chunk in shapes.chunks(20) {
+                let mut mesh = Mesh::default();
+                for (rect, p, color, gradient) in chunk {
+                    let n = mesh.vertices.len() as u32;
+                    let v = |pos: Pos2, color: Color32| Vertex { pos, uv: Pos2::ZERO, color };
+                    if *rect {
+                        let r = Rect::from_two_pos(p[0], p[1]);
+                        for pos in [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()] {
+                            mesh.vertices.push(v(pos, *color));
+                        }
+                        mesh.indices.extend([n, n + 1, n + 2, n, n + 2, n + 3]);
+                    } else {
+                        let last = if *gradient { Color32::TRANSPARENT } else { *color };
+                        mesh.vertices.extend([v(p[0], *color), v(p[1], *color), v(p[2], last)]);
+                        mesh.indices.extend([n, n + 1, n + 2]);
+                    }
+                }
+                let clip = Rect::from_min_max(Pos2::new(5.0, 3.0), Pos2::new(290.5, 196.0));
+                out.push(ClippedPrimitive { clip_rect: clip, primitive: Primitive::Mesh(mesh) });
+            }
+            out
+        };
+        let mut partial = Renderer::new(w, h);
+        let mut full = Renderer::new(w, h);
+        let (mut repainted, mut tiles, mut off_by_one) = (0u64, 0u64, 0u64);
+        for frame in 0..60 {
+            // Nothing, one shape or several change; the first frame paints everything.
+            for _ in 0..[0, 1, 1, 4][frame % 4] {
+                let i = rnd(shapes.len() as u64) as usize;
+                shapes[i] = shape(&mut rnd);
+            }
+            let prims = build(&shapes);
+            let c = partial.paint_changed([10, 20, 30], &prims, 1.0);
+            full.clear([10, 20, 30]);
+            full.paint(&prims, 1.0);
+            if frame % 4 == 0 && frame > 0 {
+                assert_eq!(c.repainted, 0, "frame {frame}: an unchanged frame repainted tiles");
+            }
+            repainted += c.repainted as u64;
+            tiles += c.tiles as u64;
+            for (i, (a, b)) in partial.frame.iter().zip(&full.frame).enumerate() {
+                let d = a.abs_diff(*b);
+                assert!(d <= 1, "frame {frame}: pixel {} differs by {d}", i / 4);
+                off_by_one += d as u64;
+            }
+        }
+        assert!(repainted * 4 < tiles * 3, "{repainted} of {tiles} tiles repainted");
+        assert!(off_by_one < 200, "{off_by_one} channel values differ by one level");
     }
 
     /// Triangle pairs that are not one opaque rectangle keep the general path.
