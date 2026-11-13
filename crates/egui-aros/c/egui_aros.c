@@ -42,6 +42,28 @@ void ea_present(struct Window *win, const uint8_t *rgba, int32_t width, int32_t 
                     width, height, RECTFMT_RGBA);
 }
 
+/* The same for the part of the frame at `x`, `y`, `w` x `h` pixels. */
+void ea_present_rect(struct Window *win, const uint8_t *rgba, int32_t width, int32_t height, int32_t stride,
+                     int32_t x, int32_t y, int32_t w, int32_t h)
+{
+    int32_t iw = win->Width - win->BorderLeft - win->BorderRight;
+    int32_t ih = win->Height - win->BorderTop - win->BorderBottom;
+    if (width > iw)
+        width = iw;
+    if (height > ih)
+        height = ih;
+    if (x < 0 || y < 0)
+        return;
+    if (x + w > width)
+        w = width - x;
+    if (y + h > height)
+        h = height - y;
+    if (w <= 0 || h <= 0)
+        return;
+    WritePixelArray((APTR)rgba, x, y, stride, win->RPort, win->BorderLeft + x, win->BorderTop + y,
+                    w, h, RECTFMT_RGBA);
+}
+
 void ea_set_busy(struct Window *win, int32_t busy)
 {
     SetWindowPointer(win, WA_BusyPointer, busy ? TRUE : FALSE, TAG_DONE);
