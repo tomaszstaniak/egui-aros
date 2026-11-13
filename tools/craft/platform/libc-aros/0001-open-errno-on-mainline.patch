@@ -1,0 +1,60 @@
+From: AROS Craft ports
+Subject: [PATCH] rs_fs_open: the error of a failed open() on mainline ABIv1
+
+Repository: rust-aros bf47cdfb60084264256399dd47fcf4a5dbd71dab, std-groundwork/libc-aros/csrc/compat.c.
+Date: 2026-11-13
+Problem: on mainline AROS (nightly 20261110) a failed open() leaves errno as an
+  earlier call left it. posixc's __fdesc.c writes errno to its own stdc base,
+  and since "stdc: make errno per thread" (956444232f, 2026-11-06) the calling
+  thread's errno is the one of the first base the thread opened. std::fs::File::open
+  of a missing file gave "File exists (os error 17)" after create_dir_all of an
+  existing directory, or "No error (os error 0)"; code that asks for NotFound
+  took the other branch (CADCraft: the workspace file was never written).
+Rationale: errno is cleared before the call; when open() fails and leaves it
+  clear, stat() of the path gives the reason (its own errno, or EEXIST for
+  O_CREAT|O_EXCL, EISDIR, EACCES). Mainline x86_64 only (RS_AROS_ABIV1): ABIv11
+  sets errno. The aarch64 target does not build this file and is not covered.
+Upstream-status: the cause is in mainline posixc; fix to submit there.
+Verification: cadcraft tests/tools/open-probe on mainline x86_64 nightly 20261110.
+Removal: when the mainline SDK in use sets errno in open().
+---
+--- a/csrc/compat.c
++++ b/csrc/compat.c
+@@ -666,12 +666,36 @@
+ }
+ 
+ #include "selector_aros.inc"
++
++#ifdef RS_AROS_ABIV1
++/* Mainline posixc writes the errno of a failed open() to its own stdc base instead of the
++ * calling thread's errno (since "stdc: make errno per thread", 956444232f, 2026-11-06; seen on
++ * the nightly 20261110): errno keeps whatever an earlier call left, so a missing file read as
++ * "File exists" or "No error". errno is cleared before the call; when the call fails and
++ * leaves it clear, the reason is taken from the path. With a fixed posixc errno is set and
++ * nothing here applies. */
++static int rs_open_errno(const char *p, int flags, mode_t mode) {
++    struct stat st;
++    int fd;
++    errno = 0;
++    fd = open(p, flags, mode);
++    if (fd < 0 && errno == 0) {
++        if (stat(p, &st) == 0)
++            errno = ((flags & O_CREAT) && (flags & O_EXCL)) ? EEXIST : S_ISDIR(st.st_mode) ? EISDIR : EACCES;
++        else if (errno == 0)
++            errno = ENOENT;
++    }
++    return fd;
++}
++#else
++#define rs_open_errno open
++#endif
+ 
+ /* Names are distinct from CRT symbols: internal CRT calls cannot re-enter this gate. */
+ int rs_fs_open(const char *p, int flags, ...) {
+     mode_t mode = 0;
+     if (flags & O_CREAT) { va_list ap; va_start(ap, flags); mode = (mode_t)va_arg(ap, int); va_end(ap); }
+-    RS_FS(int, -1, open(p, flags, mode));
++    RS_FS(int, -1, rs_open_errno(p, flags, mode));
+ }
+ int rs_fs_stat(const char *p, struct stat *s) { RS_FS(int, -1, stat(p,s)); }
+ int rs_fs_lstat(const char *p, struct stat *s) { RS_FS(int, -1, lstat(p,s)); }
