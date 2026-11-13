@@ -528,6 +528,10 @@ def cmd_binary(a, release):
     print(json.dumps({k: record[k] for k in ("archive", "sha256", "bytes", "target", "build_id", "packaged_binaries")}, indent=2))
 
 
+# Files of a private egui-aros checkout that its public repository does not have.
+EGUI_AROS_PRIVATE = ("AGENTS.md", "CLAUDE.md", "project.json")
+
+
 def git_tar(checkout, commit, paths=()):
     return lzma.compress(git("archive", "--format=tar", commit, *paths, cwd=checkout))
 
@@ -605,9 +609,11 @@ def cmd_source(a, release):
             origins[f"craft-tools-{used['commit'][:12]}.tar.xz"] = {
                 "repository": used["url"], "commit": used["commit"], "license": "MIT OR Apache-2.0",
                 "content": f"{used['path']} (content hash {used['tree_sha256']}), LICENSE-MIT, LICENSE-APACHE"}
-            add("egui-aros.tar.xz", git_tar(Path(cfg["egui_aros"]), manifest["upstreams"]["egui-aros"]["commit"]))
+            # As the public repository has it: without the workspace files of a private checkout.
+            add("egui-aros.tar.xz", git_tar(Path(cfg["egui_aros"]), manifest["upstreams"]["egui-aros"]["commit"],
+                                            [".", *(f":(exclude){x}" for x in EGUI_AROS_PRIVATE)]))
             origins["egui-aros.tar.xz"] = {"repository": ORIGINS["egui-aros"], "commit": manifest["upstreams"]["egui-aros"]["commit"],
-                                           "license": "MIT OR Apache-2.0", "content": "the whole tree"}
+                                           "license": "MIT OR Apache-2.0", "content": "the tree as published"}
             libc = manifest["libc_aros"]
             commit = libc.get("rust_aros_commit", cfg["rust_aros_commit"])
             add(f"rust-aros-{commit[:12]}.tar.xz",

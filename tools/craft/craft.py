@@ -698,8 +698,8 @@ def cmd_build(args):
         libc = sysroot / "lib/rustlib/src/rust/library/libc-aros"
         if 'Ok("aarch64") { return; }' not in (libc / "build.rs").read_text():
             raise Failure(f"{libc} is not the common sysroot's aarch64 adaptation")
-        if libc_patches:
-            raise Failure("patches/libc-aros applies to rust-aros's libc-aros, which aarch64 does not build")
+        # The libc-aros patches change rust-aros's C glue, which aarch64 does not build: they
+        # are for the x86_64 targets and are not applied here.
     elif not libc.exists():
         archive = run(["git", "-C", rust_aros, "archive", "--format=tar", commit, "std-groundwork/libc-aros"]).stdout
         with tempfile.TemporaryDirectory(prefix="libc-", dir=root) as tmp:
