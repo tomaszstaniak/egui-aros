@@ -157,6 +157,63 @@ class PlatformPatches(Temp):
         self.assertEqual(craft.LIBC_DIR, support.TOOLS / "platform" / "libc-aros")
 
 
+class CraftFonts(Temp):
+    def fonts_port(self):
+        deck = support.port(self.root, "deckcraft", "DeckCraft", "DECKCRAFT")
+        fonts = support.init(deck / "upstream" / "craft-fonts")
+        face = b"face bytes"
+        import hashlib
+        sha = hashlib.sha256(face).hexdigest()
+        (fonts / "fonts").mkdir()
+        (fonts / "fonts" / "Inter-Regular.ttf").write_bytes(face)
+        (fonts / "fonts" / "Big-CJK.ttf").write_bytes(b"large")
+        commit = support.commit(fonts, {
+            "fonts/OFL.txt": "licence\n",
+            "fonts/latin-manifest.txt": "# family | style | file | scripts | licence | licence file | sha256\n"
+                                        f"Inter | Regular | fonts/Inter-Regular.ttf | Latn | OFL-1.1 | fonts/OFL.txt | {sha}\n"
+                                        f"Source Sans 3 | Regular | fonts/Inter-Regular.ttf | Latn | OFL-1.1 | fonts/OFL.txt | {sha}\n",
+            "fonts/manifest.txt": "Big | Regular | fonts/Big-CJK.ttf | Hani | OFL-1.1 | fonts/OFL.txt | 00\n",
+        }, "fonts")
+        ups = json.loads((deck / "upstreams.json").read_text())
+        ups["repositories"]["craft-fonts"] = {"url": "https://example.invalid/craft-fonts.git", "commit": commit}
+        (deck / "upstreams.json").write_text(json.dumps(ups))
+        return deck
+
+    def test_a_port_embeds_only_the_manifests_it_names(self):
+        deck = self.fonts_port()
+        port = json.loads((deck / "scripts" / "port.json").read_text())
+        port["craft_fonts"] = {"manifests": ["fonts/latin-manifest.txt"], "empty": ["fonts/manifest.txt"],
+                               "exclude_families": ["Source Sans 3"]}
+        (deck / "scripts" / "port.json").write_text(json.dumps(port))
+        craft.configure(deck)
+        (self.root / "build").mkdir()
+        view, record = craft.craft_fonts_view(self.root / "build")
+        self.assertEqual(record["families"], ["Inter"])
+        self.assertTrue((view / "fonts" / "Inter-Regular.ttf").is_file())
+        self.assertFalse((view / "fonts" / "Big-CJK.ttf").exists())
+        self.assertNotIn("Big", (view / "fonts" / "manifest.txt").read_text().replace("#", ""))
+        self.assertEqual(craft.craft_fonts_view(self.root / "build")[0], view, "the same set is prepared once")
+
+    def test_the_package_carries_the_licences_of_the_embedded_fonts(self):
+        deck = self.fonts_port()
+        port = json.loads((deck / "scripts" / "port.json").read_text())
+        port["craft_fonts"] = {"manifests": ["fonts/latin-manifest.txt"], "empty": ["fonts/manifest.txt"]}
+        (deck / "scripts" / "port.json").write_text(json.dumps(port))
+        craft.configure(deck)
+        view, record = craft.craft_fonts_view(self.root)
+        files = package.font_notices({"craft_fonts": {"path": str(view), **record}}, "DeckCraft")
+        self.assertIn("DeckCraft/Licenses/Fonts/fonts-OFL.txt", files)
+        self.assertIn(b"Inter | Regular", files["DeckCraft/Licenses/Fonts/FONTS.txt"][0])
+        (view / "fonts" / "Inter-Regular.ttf").write_bytes(b"changed")
+        with self.assertRaises(package.Failure):
+            package.font_notices({"craft_fonts": {"path": str(view), **record}}, "DeckCraft")
+
+    def test_a_port_without_craft_fonts_embeds_none(self):
+        deck = self.fonts_port()
+        craft.configure(deck)
+        self.assertEqual(craft.craft_fonts_view(self.root), (None, None))
+
+
 class ReleaseName(unittest.TestCase):
     def test_only_a_revision_with_rebuilt_programs_shows_in_their_name(self):
         self.assertEqual(craft.shown_release({"release": "1.2.0"}), "1.2.0")

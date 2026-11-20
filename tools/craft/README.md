@@ -17,6 +17,7 @@ One implementation of the workflow the Craft ports for AROS share: pinned upstre
 
 - `scripts/craft.py`: a copy of `bootstrap.py`, unchanged.
 - `scripts/port.json`: `id`, `name`, `env_prefix`, `packages` (cargo package to AROS program), `tools` (test tools).
+  Optional `craft_fonts`: the craft-fonts manifests the programs embed (`manifests`), those left empty (`empty`) and families left out (`exclude_families`); the checkout is the `craft-fonts` entry of `upstreams.json`, and the build points `CRAFT_FONTS_DIR` at that set only. Without it `CRAFT_FONTS_DIR` is unset for the build.
 - `scripts/tooling.json`: the pin.
 
 ```json

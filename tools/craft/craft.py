@@ -488,6 +488,58 @@ def pin_libc(cfg, src, libc, config_args, record):
     record.update(libc_locked=locked, libc_used=version)
 
 
+def craft_fonts_view(root):
+    """The craft-fonts set a port embeds, as a directory its fonts crate reads through
+    CRAFT_FONTS_DIR. port.json `craft_fonts` names the manifests to keep (`manifests`, paths in
+    the craft-fonts checkout), the manifests to leave empty (`empty`) and families to leave out
+    (`exclude_families`); the checkout is upstreams.json `craft-fonts`. Each kept file is checked
+    against its manifest checksum. Returns (directory, record), or (None, None) when the port
+    embeds no craft-fonts."""
+    conf = PORT.get("craft_fonts")
+    if not conf:
+        return None, None
+    spec = upstreams().get("craft-fonts")
+    if not spec:
+        raise Failure("port.json names craft_fonts, but upstreams.json has no craft-fonts entry")
+    src = check_upstream("craft-fonts", spec)
+    excluded = list(conf.get("exclude_families", []))
+    kept = {}
+    for rel in conf["manifests"]:
+        lines = [l for l in (src / rel).read_text().splitlines() if l.strip() and not l.startswith("#")]
+        entries = [[f.strip() for f in l.split(" | ")] for l in lines]
+        kept[rel] = [e for e in entries if e[0] not in excluded]
+    key = hashlib.sha256(json.dumps([conf, kept], sort_keys=True).encode()).hexdigest()[:8]
+    out = root / f"craft-fonts-{spec['commit'][:12]}-{key}"
+    if not (out / "record.json").exists():
+        with tempfile.TemporaryDirectory(prefix="fonts-", dir=root) as tmp:
+            staged = Path(tmp) / "fonts-view"
+            staged.mkdir()
+            for rel, entries in kept.items():
+                for e in entries:
+                    if len(e) < 7:
+                        raise Failure(f"craft-fonts {rel}: malformed line {' | '.join(e)}")
+                    file, licence_file, sha = e[2], e[5], e[6]
+                    for f in (file, licence_file):
+                        dest = staged / f
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(src / f, dest)
+                    if sha256_file(staged / file) != sha:
+                        raise Failure(f"craft-fonts {file} does not match its manifest checksum")
+                (staged / rel).parent.mkdir(parents=True, exist_ok=True)
+                (staged / rel).write_text("".join(" | ".join(e) + "\n" for e in entries))
+            for rel in conf.get("empty", []):
+                (staged / rel).parent.mkdir(parents=True, exist_ok=True)
+                (staged / rel).write_text("# Left empty by the AROS port (scripts/port.json craft_fonts).\n")
+            files = [e for entries in kept.values() for e in entries]
+            record = {"commit": spec["commit"], "manifests": conf["manifests"], "empty": conf.get("empty", []),
+                      "families": sorted({e[0] for e in files}), "files": len(files),
+                      "bytes": sum((staged / e[2]).stat().st_size for e in files), "excluded": excluded,
+                      "tree_sha256": tree_hash(staged)}
+            (staged / "record.json").write_text(json.dumps(record, indent=2) + "\n")
+            staged.rename(out)
+    return out, json.loads((out / "record.json").read_text())
+
+
 def objdump_key(cfg, obj):
     text = run([tool(cfg, "objdump"), "-d", "-r", "--no-show-raw-insn", obj]).stdout.decode().split("\n", 4)[-1]
     return hashlib.sha256(text.encode()).hexdigest()
@@ -840,6 +892,13 @@ def cmd_build(args):
     # x86_64, whose profiles use it (AROS loads each section wherever memory is free).
     cflags = [f"--sysroot={cfg['aros_sdk']}", "-fno-pic"] + (["-mcmodel=large"] if cfg["target"].startswith("aros-x86_64-") else [])
     env.update({f"CC_{triple}": cfg["aros_gcc"], f"AR_{triple}": cfg["aros_ar"], f"CFLAGS_{triple}": " ".join(cflags)})
+    # An upstream .cargo/config.toml may point CRAFT_FONTS_DIR at a sibling checkout; a port
+    # embeds only the set its port.json names (craft_fonts_view), or none.
+    env.pop("CRAFT_FONTS_DIR", None)
+    fonts_dir, fonts_record = craft_fonts_view(root)
+    if fonts_dir:
+        env["CRAFT_FONTS_DIR"] = str(fonts_dir)
+        fonts_record = {"path": str(fonts_dir), **fonts_record}
     build_id = str(uuid.uuid4())
     out = root / "out" / f"{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{build_id[:8]}"
     out.mkdir(parents=True)
@@ -869,6 +928,7 @@ def cmd_build(args):
         "pthread": pthread,
         "glue": glue if raspi else None,
         "egui_aros": egui_aros_record,
+        "craft_fonts": fonts_record,
         "build_copy_adjustments": adjusted,
         "toolchain": {"std_source_sha256": tree_hash(Path(run(["rustc", "+" + cfg["toolchain"], "--print", "sysroot"]).stdout.decode().strip()) / "lib/rustlib/src/rust"),
                       "gcc_sha256": sha256_file(cfg["aros_gcc"]),

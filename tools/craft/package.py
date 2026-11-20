@@ -508,6 +508,7 @@ def cmd_binary(a, release):
     files[f"{drawer}/BUILD.txt"] = (build_txt(release, spec, manifest, repo_head, packaged).encode(), 0o100644)
     for rel in release["notices"]:
         files[f"{drawer}/Licenses/{APP}/{rel}"] = ((WORK / rel).read_bytes(), 0o100644)
+    files.update(font_notices(manifest, drawer))
     files[f"{drawer}/Licenses/AROS-NOTICE.txt"] = ((PACKAGING / spec["notice"]).read_bytes(), 0o100644)
     files[f"{drawer}/Licenses/AROS-LICENSE.txt"] = ((PACKAGING / "AROS-LICENSE.txt").read_bytes(), 0o100644)
     text, crates = third_party(manifest, Path(cfg["build_root"]))
@@ -544,6 +545,35 @@ ORIGINS = {
     "aros-mainline": "https://github.com/aros-development-team/AROS",
     "pomaros-hosted": "https://github.com/pomaros/pomaros-hosted",
 }
+
+
+def font_notices(manifest, drawer):
+    """The craft-fonts set the build embedded (scripts/port.json craft_fonts): its manifests,
+    which name each file, its licence and checksum, as Licenses/Fonts/FONTS.txt, and every
+    licence file they name. The set must be the one the build recorded."""
+    fonts = manifest.get("craft_fonts")
+    if not fonts:
+        return {}
+    root = Path(fonts["path"])
+    digest = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and p.name != "record.json"):
+        rel = path.relative_to(root).as_posix().encode()
+        digest.update(rel + b"\0" + (b"x" if os.access(path, os.X_OK) else b"-") + hashlib.sha256(path.read_bytes()).digest())
+    if digest.hexdigest() != fonts["tree_sha256"]:
+        raise Failure(f"{root} differs from the fonts the build embedded")
+    out, listing = {}, []
+    for rel in fonts["manifests"]:
+        text = (root / rel).read_text()
+        listing.append(text)
+        for line in text.splitlines():
+            fields = [f.strip() for f in line.split(" | ")]
+            if len(fields) >= 6 and not line.startswith("#"):
+                licence = Path(fields[5])
+                out[f"{drawer}/Licenses/Fonts/{licence.parent.name}-{licence.name}"] = ((root / licence).read_bytes(), 0o100644)
+    header = f"Fonts built into the programs: craft-fonts {fonts['commit']}, {', '.join(fonts['manifests'])}.\n" \
+             "Each line: family | style | file | scripts | licence | licence file | SHA-256.\n\n"
+    out[f"{drawer}/Licenses/Fonts/FONTS.txt"] = ((header + "".join(listing)).encode(), 0o100644)
+    return out
 
 
 def rust_licenses(rustc):
