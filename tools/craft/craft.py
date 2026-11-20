@@ -898,6 +898,7 @@ def cmd_build(args):
     fonts_dir, fonts_record = craft_fonts_view(root)
     if fonts_dir:
         env["CRAFT_FONTS_DIR"] = str(fonts_dir)
+        fonts_record = {"path": str(fonts_dir), **fonts_record}
     build_id = str(uuid.uuid4())
     out = root / "out" / f"{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{build_id[:8]}"
     out.mkdir(parents=True)

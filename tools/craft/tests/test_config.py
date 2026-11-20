@@ -194,6 +194,20 @@ class CraftFonts(Temp):
         self.assertNotIn("Big", (view / "fonts" / "manifest.txt").read_text().replace("#", ""))
         self.assertEqual(craft.craft_fonts_view(self.root / "build")[0], view, "the same set is prepared once")
 
+    def test_the_package_carries_the_licences_of_the_embedded_fonts(self):
+        deck = self.fonts_port()
+        port = json.loads((deck / "scripts" / "port.json").read_text())
+        port["craft_fonts"] = {"manifests": ["fonts/latin-manifest.txt"], "empty": ["fonts/manifest.txt"]}
+        (deck / "scripts" / "port.json").write_text(json.dumps(port))
+        craft.configure(deck)
+        view, record = craft.craft_fonts_view(self.root)
+        files = package.font_notices({"craft_fonts": {"path": str(view), **record}}, "DeckCraft")
+        self.assertIn("DeckCraft/Licenses/Fonts/fonts-OFL.txt", files)
+        self.assertIn(b"Inter | Regular", files["DeckCraft/Licenses/Fonts/FONTS.txt"][0])
+        (view / "fonts" / "Inter-Regular.ttf").write_bytes(b"changed")
+        with self.assertRaises(package.Failure):
+            package.font_notices({"craft_fonts": {"path": str(view), **record}}, "DeckCraft")
+
     def test_a_port_without_craft_fonts_embeds_none(self):
         deck = self.fonts_port()
         craft.configure(deck)
