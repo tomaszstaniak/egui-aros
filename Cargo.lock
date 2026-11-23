@@ -57,6 +57,13 @@ checksum = "fc7eb209b1518d6bb87b283c20095f5228ecda460da70b44f0802523dea6da04"
 [[package]]
 name = "arboard"
 version = "3.7.0"
+dependencies = [
+ "aros-gui-sys",
+]
+
+[[package]]
+name = "arboard"
+version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aeb9553e62312c8756a5979254fc6d7da8bbeb5986a1e17037fab932f7037917"
 dependencies = [
@@ -504,7 +511,7 @@ dependencies = [
 name = "egui-winit"
 version = "0.37.0"
 dependencies = [
- "arboard",
+ "arboard 3.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "aros-gui-sys",
  "block2 0.6.2",
  "bytemuck",
@@ -1691,6 +1698,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "rfd"
+version = "0.17.2"
+dependencies = [
+ "egui-aros",
+ "raw-window-handle",
 ]
 
 [[package]]
