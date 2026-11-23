@@ -19,6 +19,7 @@ One implementation of the workflow the Craft ports for AROS share: pinned upstre
 - `scripts/port.json`: `id`, `name`, `env_prefix`, `packages` (cargo package to AROS program), `tools` (test tools).
   Optional `craft_fonts`: the craft-fonts manifests the programs embed (`manifests`), those left empty (`empty`) and families left out (`exclude_families`); the checkout is the `craft-fonts` entry of `upstreams.json`, and the build points `CRAFT_FONTS_DIR` at that set only. Without it `CRAFT_FONTS_DIR` is unset for the build.
 - `scripts/tooling.json`: the pin.
+- `packaging/release.json`: names, version, targets, limitations and notices of the release archives. Optional `drawer_files`: further files put beside the programs, `{"name in the drawer": "file in packaging/"}` (PdfCraft's portable-mode marker, for one).
 
 ```json
 {
