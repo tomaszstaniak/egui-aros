@@ -1,0 +1,26 @@
+[package]
+# Built as `rfd` for AROS programs: the port's build patches it in for crates.io rfd 0.17, whose
+# backends (GTK, XDG portal, AppKit, Win32) do not exist on AROS. The same builder and handle
+# types, answered by ASL requesters.
+name = "rfd"
+version = "0.17.2"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "The rfd 0.17 file dialog API on AROS, answered by ASL requesters through egui-aros"
+
+[features]
+# rfd's own features, so dependents that name them resolve; none changes anything here.
+default = ["xdg-portal", "wayland"]
+xdg-portal = []
+wayland = []
+gtk3 = []
+file-handle-inner = []
+common-controls-v6 = []
+
+[dependencies]
+egui-aros = { version = "0.1", path = "../egui-aros", features = ["asl"] }
+raw-window-handle = "0.6.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("aros"))'] }

@@ -461,6 +461,20 @@ def apkg_pack_zip(path, files, date, target, release, programs):
     return added
 
 
+def drawer_files(release, drawer):
+    """release.json `drawer_files`: further files put beside the programs, {name in the drawer:
+    file in packaging/}, such as a marker the program looks for. Names are plain file names."""
+    out = {}
+    for name, rel in release.get("drawer_files", {}).items():
+        if not name or "/" in name or ":" in name or name.startswith("."):
+            raise Failure(f"release.json drawer_files: {name!r} is not a plain file name")
+        source = (PACKAGING / rel).resolve()
+        if PACKAGING.resolve() not in source.parents or not source.is_file():
+            raise Failure(f"release.json drawer_files: {rel!r} is not a file in packaging/")
+        out[f"{drawer}/{name}"] = (source.read_bytes(), 0o100644)
+    return out
+
+
 class Dist:
     def __init__(self, path):
         self.path = path
@@ -505,6 +519,7 @@ def cmd_binary(a, release):
     files[f"{drawer}.info"] = (icons.icon(w, h, rows, icons.ICON_DRAWER, release["stack"]), 0o100644)
     files[f"{drawer}/{drawer}.info"] = (icons.icon(w, h, rows, icons.ICON_TOOL, release["stack"], release["tooltypes"]), 0o100644)
     files[f"{drawer}/ReadMe.txt"] = (readme(release, spec), 0o100644)
+    files.update(drawer_files(release, drawer))
     files[f"{drawer}/BUILD.txt"] = (build_txt(release, spec, manifest, repo_head, packaged).encode(), 0o100644)
     for rel in release["notices"]:
         files[f"{drawer}/Licenses/{APP}/{rel}"] = ((WORK / rel).read_bytes(), 0o100644)

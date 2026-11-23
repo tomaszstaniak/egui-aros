@@ -513,6 +513,18 @@ impl std::error::Error for Error {}
 #[derive(Clone)]
 pub struct WindowHandle(Weak<Window>);
 
+thread_local! {
+    /// The window [`run`] opened on this thread, for [`window`].
+    static CURRENT_WINDOW: std::cell::RefCell<Option<WindowHandle>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The window [`run`] has open on this thread, as [`App::started`] got it: for code that has no
+/// handle of its own, such as the `rfd` replacement whose requesters need a parent window.
+/// `None` on another thread, before the window opens and after it closes.
+pub fn window() -> Option<WindowHandle> {
+    CURRENT_WINDOW.with(|w| w.borrow().clone()).filter(WindowHandle::is_open)
+}
+
 impl WindowHandle {
     /// The Intuition `struct Window *` while the window is open.
     pub fn raw(&self) -> Option<*mut std::ffi::c_void> {
@@ -717,6 +729,7 @@ impl Runner<'_> {
         let state = egui_winit::State::new(self.ctx.clone(), ViewportId::ROOT, event_loop, Some(1.0), None, Some(16384));
         let mut info = ViewportInfo::default();
         egui_winit::update_viewport_info(&mut info, &self.ctx, &window, true);
+        CURRENT_WINDOW.with(|w| *w.borrow_mut() = Some(WindowHandle(Rc::downgrade(&window))));
         self.app.started(WindowHandle(Rc::downgrade(&window)));
         self.running = Some(Running {
             #[cfg(feature = "glow")]

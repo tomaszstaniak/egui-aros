@@ -1,0 +1,28 @@
+[package]
+# Built as `arboard` for AROS programs: the port's build patches it in for crates.io arboard 3,
+# whose backends (X11, Wayland, AppKit, Win32) do not exist on AROS. The same types, on the AROS
+# clipboard through aros-gui-sys (text as FTXT, pictures as ILBM).
+name = "arboard"
+version = "3.7.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "The arboard 3 clipboard API on AROS, on the system clipboard through aros-gui-sys"
+
+[features]
+# arboard's own features, so dependents that name them resolve; none changes anything here.
+default = ["image-data"]
+image-data = []
+image = []
+core-graphics = []
+windows-sys = []
+wayland-data-control = []
+wl-clipboard-rs = []
+
+[dependencies]
+# The clipboard functions egui-aros uses too. Not egui-aros itself: egui-winit names arboard as
+# a dependency (unused on AROS), which would make a cycle.
+aros-gui-sys = "0.1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("aros"))'] }

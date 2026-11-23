@@ -20,6 +20,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -586,7 +587,9 @@ def cmd_test(args):
     (aros-gui-sys is not on crates.io; the patched crates are what AROS builds use)."""
     cfg = eaconfig.load(["cargo_home", "build_root"])
     crates = cmd_crates(args, quiet=True)
-    command = ["cargo", "test", "-p", "egui-aros", "-p", "aros-startup", "--all-features", "--lib"]
+    # rfd and arboard by path: the registry arboard is in the lock too (egui-winit on the host).
+    own = [x for d, n in (("rfd-aros", "rfd"), ("arboard-aros", "arboard")) for x in ("-p", f"path+file://{REPO / 'crates' / d}#{n}")]
+    command = ["cargo", "test", "-p", "egui-aros", "-p", "aros-startup", *own, "--all-features", "--lib"]
     for name, info in crates.items():
         command += ["--config", f"patch.crates-io.{name}.path=" + json.dumps(info["path"])]
     env = dict(os.environ, CARGO_HOME=cfg["cargo_home"], CARGO_TARGET_DIR=str(Path(cfg["build_root"]) / "host-target"))
@@ -608,14 +611,18 @@ def cmd_vendor(args):
     sync_tree(files, dest / "egui-aros")
     # This repository's other crates, beside egui-aros (its path dependencies resolve there) and
     # patched in for programs that use them directly (aros-startup in a command-line program,
-    # craft-jobs for work off the window loop).
-    for own in ("aros-startup", "craft-jobs"):
+    # craft-jobs for work off the window loop), and the AROS versions of two crates.io crates
+    # with no AROS backend, under those crates' names: rfd (file dialogs, as ASL requesters) and
+    # arboard (the clipboard). A program whose lock has another major version of either leaves
+    # the patch unused.
+    for own, package in (("aros-startup", "aros-startup"), ("craft-jobs", "craft-jobs"), ("rfd-aros", "rfd"), ("arboard-aros", "arboard")):
         own_root = REPO / "crates" / own
         own_files = {p.relative_to(own_root).as_posix(): (p.read_bytes(), os.access(p, os.X_OK))
                      for p in own_root.rglob("*")
                      if p.is_file() and p.relative_to(own_root).parts[0] not in ("target", "Cargo.lock")}
         sync_tree(own_files, dest / own)
-        crates[own] = {"package": own, "path": str(dest / own), "version": "0.1.0", "tree_sha256": tree_hash(dest / own)}
+        version = re.search(r'^version = "([^"]+)"', (own_root / "Cargo.toml").read_text(), re.M).group(1)
+        crates[package] = {"package": package, "path": str(dest / own), "version": version, "tree_sha256": tree_hash(dest / own)}
     record = {"egui_aros": str(dest / "egui-aros"),
               "egui_aros_tree_sha256": tree_hash(dest / "egui-aros"),
               "upstreams": upstreams(),
