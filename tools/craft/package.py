@@ -521,8 +521,9 @@ def cmd_binary(a, release):
     files[f"{drawer}/ReadMe.txt"] = (readme(release, spec), 0o100644)
     files.update(drawer_files(release, drawer))
     files[f"{drawer}/BUILD.txt"] = (build_txt(release, spec, manifest, repo_head, packaged).encode(), 0o100644)
+    renames = release.get("notice_renames", {})
     for rel in release["notices"]:
-        files[f"{drawer}/Licenses/{APP}/{rel}"] = ((WORK / rel).read_bytes(), 0o100644)
+        files[f"{drawer}/Licenses/{APP}/{renames.get(rel, rel)}"] = ((WORK / rel).read_bytes(), 0o100644)
     files.update(font_notices(manifest, drawer))
     files[f"{drawer}/Licenses/AROS-NOTICE.txt"] = ((PACKAGING / spec["notice"]).read_bytes(), 0o100644)
     files[f"{drawer}/Licenses/AROS-LICENSE.txt"] = ((PACKAGING / "AROS-LICENSE.txt").read_bytes(), 0o100644)
